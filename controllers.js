@@ -574,3 +574,94 @@ module.exports = {
     createBookingController, 
     paymobWebhookController // الدالة الجديدة للـ Webhook
 };
+
+// controllers.js (إضافات لمنطق الموظف)
+
+// ... (تأكد من استيراد models و withTransaction) ...
+
+// -------------------------------------
+// 12. جلب الملاعب المعينة للموظف
+// -------------------------------------
+async function getEmployeeFieldsController(req, res) {
+    const employeeId = req.user.id;
+    try {
+        const fields = await models.getEmployeeAssignedFields(employeeId);
+        res.json(fields);
+    } catch (error) {
+        console.error('getEmployeeFieldsController error:', error);
+        res.status(500).json({ message: "فشل جلب الملاعب المعينة للموظف." });
+    }
+}
+
+// -------------------------------------
+// 13. جلب حجوزات اليوم لملعب معين
+// -------------------------------------
+async function getTodayBookingsController(req, res) {
+    const { fieldId, date } = req.query; // date سيتم تمريره اليوم افتراضياً
+    
+    if (!fieldId || !date) {
+        return res.status(400).json({ message: "يجب تحديد الملعب والتاريخ." });
+    }
+    
+    // التحقق من صلاحية الموظف (أمني)
+    const employeeId = req.user.id;
+    const assignedFields = await models.getEmployeeAssignedFields(employeeId);
+    if (!assignedFields.some(f => f.field_id === fieldId)) {
+        return res.status(403).json({ message: "غير مصرح لك بالاطلاع على حجوزات هذا الملعب." });
+    }
+
+    try {
+        const bookings = await models.getBookingsForEmployee(fieldId, date);
+        res.json(bookings);
+    } catch (error) {
+        console.error('getTodayBookingsController error:', error);
+        res.status(500).json({ message: "فشل جلب الحجوزات اليومية." });
+    }
+}
+
+// -------------------------------------
+// 14. تسجيل الحضور (Check-in)
+// -------------------------------------
+async function checkInController(req, res) {
+    const { bookingId } = req.body;
+    
+    try {
+        const result = await withTransaction(async (client) => {
+            // يمكن إضافة منطق آخر هنا (مثلاً: التحقق من الوقت الحالي)
+            return await models.updateBookingStatus(client, bookingId, 'played', true);
+        });
+        
+        res.json({ message: "✅ تم تسجيل الحضور بنجاح (Check-in)." });
+    } catch (error) {
+        console.error('checkInController error:', error.message);
+        res.status(409).json({ message: error.message || "فشل تسجيل الحضور." });
+    }
+}
+
+// -------------------------------------
+// 15. تأكيد الدفع النقدي (للحجوزات أقل من 24 ساعة)
+// -------------------------------------
+async function confirmCashController(req, res) {
+    const { bookingId } = req.body;
+    
+    try {
+        const result = await withTransaction(async (client) => {
+            // هذا المنطق خاص بالحجوزات ذات العربون (deposit_amount = 0) وحالتها 'booked_unconfirmed' 
+            // حيث يتم تحويلها إلى 'booked_confirmed'
+            return await models.updateBookingStatus(client, bookingId, 'booked_confirmed', true);
+        });
+        
+        res.json({ message: "💰 تم تأكيد الدفع النقدي وتأكيد الحجز." });
+    } catch (error) {
+        console.error('confirmCashController error:', error.message);
+        res.status(409).json({ message: error.message || "فشل تأكيد الدفع النقدي." });
+    }
+}
+
+module.exports = {
+    // ... (تصدير جميع الدوال السابقة)
+    getEmployeeFieldsController,
+    getTodayBookingsController,
+    checkInController,
+    confirmCashController
+};
