@@ -15,3 +15,22 @@ router.get('/user/profile', verifyToken, checkRole(['player', 'employee', 'owner
 });
 
 module.exports = router;
+
+// routes.js (تأكيد المسارات وحمايتها)
+// ... (الـ Imports الحالية) ...
+const { login, signup, getProfile, getMyBookings, updateProfile, getPlayerRequests } = require('./controllers');
+const { verifyToken, checkRole } = require('./middleware');
+
+// ... (مسارات Authentication الحالية) ...
+
+// مسارات اللاعبين المحمية
+router.get('/user/profile', verifyToken, checkRole(['player', 'employee', 'owner', 'admin']), getProfile);
+router.put('/user/profile', verifyToken, checkRole(['player']), updateProfile); // تحديث الملف الشخصي للاعب فقط
+
+router.get('/player/bookings', verifyToken, checkRole(['player']), getMyBookings);
+router.get('/player/requests', verifyToken, checkRole(['player']), getPlayerRequests); 
+
+// 🚨 يجب إضافة مسار POST /booking/create لاحقاً
+// router.post('/booking/create', verifyToken, checkRole(['player']), createBooking); 
+
+module.exports = router;
