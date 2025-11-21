@@ -431,3 +431,103 @@ module.exports = {
     getAllStadiums,
     // ...
 };
+
+// models.js (إضافات لدوال CRUD للملاعب)
+
+/**
+ * دالة مساعدة لجلب معرفات الموظفين المرتبطين بملعب
+ */
+async function getAssignedEmployees(fieldId, client) {
+    const query = `
+        SELECT user_id
+        FROM employee_assignments
+        WHERE field_id = $1
+    `;
+    const result = await execQuery(query, [fieldId], client);
+    return result.rows.map(row => row.user_id);
+}
+
+
+/**
+ * 1. إنشاء ملعب جديد
+ */
+async function createField(ownerId, name, location, pricePerHour, depositAmount, features, client) {
+    const query = `
+        INSERT INTO fields (owner_id, name, location, price_per_hour, deposit_amount, features, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+        RETURNING field_id, name
+    `;
+    const result = await execQuery(query, [ownerId, name, location, pricePerHour, depositAmount, features], client);
+    return result.rows[0];
+}
+
+/**
+ * 2. تحديث بيانات ملعب موجود
+ */
+async function updateField(fieldId, updates, client) {
+    const fields = [];
+    const values = [];
+    let index = 1;
+
+    for (const key in updates) {
+        if (updates[key] !== undefined) {
+            fields.push(`${key} = $${index++}`);
+            values.push(updates[key]);
+        }
+    }
+
+    if (fields.length === 0) return null;
+
+    values.push(fieldId);
+
+    const query = `
+        UPDATE fields
+        SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+        WHERE field_id = $${index}
+        RETURNING field_id, name
+    `;
+
+    const result = await execQuery(query, values, client);
+    return result.rows[0];
+}
+
+/**
+ * 3. حذف (تعطيل) ملعب
+ */
+async function deleteField(fieldId, client) {
+    // يفضل التعطيل بدلاً من الحذف لضمان بقاء سجل الحجوزات
+    const query = `
+        UPDATE fields
+        SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+        WHERE field_id = $1
+        RETURNING field_id, name
+    `;
+    const result = await execQuery(query, [fieldId], client);
+    return result.rows[0];
+}
+
+/**
+ * 4. تفعيل ملعب
+ */
+async function activateField(fieldId, client) {
+    const query = `
+        UPDATE fields
+        SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+        WHERE field_id = $1
+        RETURNING field_id, name
+    `;
+    const result = await execQuery(query, [fieldId], client);
+    return result.rows[0];
+}
+
+
+// ... (أضف الدوال الجديدة إلى تصدير الدوال)
+module.exports = {
+    // ... (تصدير الدوال السابقة)
+    createField,
+    updateField,
+    deleteField,
+    activateField,
+    getAssignedEmployees,
+    // ...
+};
