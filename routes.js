@@ -56,3 +56,12 @@ router.post('/api/booking/create', verifyToken, checkRole(['player']), createBoo
 router.get('/api/booking/:bookingId/details', verifyToken, checkRole(['player']), getBookingDetailsController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافة المسار التالي)
+// ... (تأكد من استيراد الدالة الجديدة من controllers) ...
+const { confirmPaymentController } = require('./controllers');
+
+// مسار تأكيد الدفع النهائي بعد النجاح من بوابة الدفع
+router.post('/api/booking/confirm-payment', verifyToken, checkRole(['player']), confirmPaymentController);
+
+// ... (بقية ملف routes.js)
