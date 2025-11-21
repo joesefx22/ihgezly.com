@@ -327,3 +327,68 @@ module.exports = {
     createBookingController,
     getBookingDetailsController
 };
+
+// controllers.js (إضافة الدالة التالية)
+
+// ... (تأكد من استيراد withTransaction)
+const { withTransaction } = require('./db');
+
+// -------------------------------------
+// 11. تأكيد عملية الدفع وتحديث حالة الحجز
+// -------------------------------------
+async function confirmPaymentController(req, res) {
+    // paymentRef هو الرقم المرجعي الذي نحصل عليه من بوابة الدفع (مثل Paymob)
+    const { bookingId, paymentRef } = req.body; 
+    const playerId = req.user.id; // تأمين: يجب أن يكون المستخدم الحالي هو صاحب الحجز
+
+    if (!bookingId || !paymentRef) {
+        return res.status(400).json({ message: "بيانات تأكيد الدفع غير كاملة." });
+    }
+
+    try {
+        const result = await withTransaction(async (client) => {
+            
+            // 1. التحقق من الحجز وأمن المستخدم (FOR UPDATE لضمان عدم التزامن)
+            const currentBooking = (await client.query(
+                'SELECT status, player_id, deposit_amount FROM bookings WHERE booking_id = $1 AND deposit_paid = FALSE FOR UPDATE',
+                [bookingId]
+            )).rows[0];
+
+            if (!currentBooking) {
+                // قد يكون الحجز مؤكد بالفعل أو غير موجود
+                throw new Error("هذا الحجز إما غير موجود أو تم تأكيده مسبقاً.");
+            }
+            if (currentBooking.player_id !== playerId) {
+                // تحقق أمني حاسم
+                throw new Error("غير مصرح لك بتأكيد هذا الحجز.");
+            }
+
+            // 2. تحديث حالة الحجز إلى مؤكد وحفظ مرجع الدفع
+            const updateQuery = `
+                UPDATE bookings
+                SET status = 'booked_confirmed', deposit_paid = TRUE, payment_reference = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE booking_id = $1
+                RETURNING booking_id, status
+            `;
+            await client.query(updateQuery, [bookingId, paymentRef]);
+
+            // 3. (هنا يمكن إضافة منطق إرسال إيميل التأكيد للاعب ومالك الملعب)
+
+            return { 
+                message: "✅ تم تأكيد دفع العربون والحجز بنجاح!",
+                bookingId: bookingId
+            };
+        });
+
+        res.json(result);
+
+    } catch (error) {
+        console.error('confirmPaymentController error:', error.message);
+        res.status(500).json({ message: error.message || "فشل تأكيد عملية الدفع والحجز. يرجى مراجعة الدعم." });
+    }
+}
+
+module.exports = { 
+    // ... (تصدير جميع الدوال الأخرى)
+    confirmPaymentController 
+};
