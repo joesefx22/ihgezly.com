@@ -327,3 +327,107 @@ module.exports = {
     getOwnerDashboardStats,
     // ...
 };
+
+// models.js (أضف هذه الدوال في نهاية الملف)
+
+/**
+ * جلب إحصائيات لوحة تحكم الأدمن العامة
+ */
+async function getAdminDashboardStats() {
+    const query = `
+        SELECT 
+            (SELECT COUNT(*) FROM users) AS total_users,
+            (SELECT COUNT(*) FROM fields WHERE is_active = TRUE) AS total_stadiums,
+            (SELECT COUNT(*) FROM bookings) AS total_bookings,
+            (SELECT SUM(total_amount) FROM bookings WHERE status = 'played') AS total_revenue_gross,
+            (SELECT COUNT(*) FROM users WHERE is_approved = FALSE AND role IN ('owner', 'employee')) AS pending_managers
+    `;
+    const result = await execQuery(query);
+    return result.rows[0] || {};
+}
+
+/**
+ * جلب جميع المستخدمين مع معلومات الدور والموافقة
+ */
+async function getAllUsers() {
+    const query = `
+        SELECT user_id, name, email, phone, role, is_approved, created_at
+        FROM users
+        ORDER BY created_at DESC
+    `;
+    const result = await execQuery(query);
+    return result.rows;
+}
+
+/**
+ * جلب المستخدمين المنتظرين الموافقة (مالك/موظف)
+ */
+async function getPendingManagers() {
+    const query = `
+        SELECT user_id, name, email, role, created_at
+        FROM users
+        WHERE is_approved = FALSE AND role IN ('owner', 'employee')
+        ORDER BY created_at ASC
+    `;
+    const result = await execQuery(query);
+    return result.rows;
+}
+
+/**
+ * تحديث حالة الموافقة للمستخدم
+ */
+async function updateApprovalStatus(userId, isApproved, role) {
+    const query = `
+        UPDATE users
+        SET is_approved = $1, role = $2
+        WHERE user_id = $3
+        RETURNING user_id, name, email, is_approved, role
+    `;
+    const result = await execQuery(query, [isApproved, role, userId]);
+    return result.rows[0];
+}
+
+/**
+ * جلب سجلات النشاط (Activity Logs)
+ */
+async function getActivityLogs(limit = 20) {
+    const query = `
+        SELECT 
+            l.action_id, l.action, l.description, l.created_at, 
+            u.name AS user_name, u.role AS user_role
+        FROM activity_logs l
+        LEFT JOIN users u ON l.user_id = u.user_id
+        ORDER BY l.created_at DESC
+        LIMIT $1
+    `;
+    const result = await execQuery(query, [limit]);
+    return result.rows;
+}
+
+/**
+ * جلب جميع الملاعب (لإدارة الأدمن)
+ */
+async function getAllStadiums() {
+    const query = `
+        SELECT 
+            f.field_id, f.name, f.location, f.price_per_hour, f.is_active,
+            u.name AS owner_name
+        FROM fields f
+        JOIN users u ON f.owner_id = u.user_id
+        ORDER BY f.name ASC
+    `;
+    const result = await execQuery(query);
+    return result.rows;
+}
+
+// ... (تأكد من إضافة الدوال الجديدة في تصدير الدوال)
+module.exports = {
+    // ... (تصدير الدوال السابقة)
+    getAdminDashboardStats,
+    getAllUsers,
+    getPendingManagers,
+    updateApprovalStatus,
+    getActivityLogs,
+    getAllStadiums,
+    // ...
+};
