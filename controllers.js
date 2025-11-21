@@ -665,3 +665,122 @@ module.exports = {
     checkInController,
     confirmCashController
 };
+
+// controllers.js (إضافات لمنطق المالك)
+
+// ... (تأكد من استيراد models و withTransaction) ...
+// ... (يفترض وجود دالة updateBookingStatus التي استخدمناها للموظف) ...
+
+// -------------------------------------
+// 16. جلب إحصائيات لوحة مالك الملعب
+// -------------------------------------
+async function getOwnerDashboardController(req, res) {
+    const ownerId = req.user.id;
+    try {
+        const stats = await models.getOwnerDashboardStats(ownerId);
+        res.json(stats);
+    } catch (error) {
+        console.error('getOwnerDashboardController error:', error);
+        res.status(500).json({ message: "فشل جلب إحصائيات لوحة التحكم." });
+    }
+}
+
+// -------------------------------------
+// 17. جلب ملاعب المالك
+// -------------------------------------
+async function getOwnerStadiumsController(req, res) {
+    const ownerId = req.user.id;
+    try {
+        const stadiums = await models.getOwnerStadiums(ownerId);
+        res.json(stadiums);
+    } catch (error) {
+        console.error('getOwnerStadiumsController error:', error);
+        res.status(500).json({ message: "فشل جلب الملاعب." });
+    }
+}
+
+// -------------------------------------
+// 18. جلب حجوزات المالك
+// -------------------------------------
+async function getOwnerBookingsController(req, res) {
+    const ownerId = req.user.id;
+    const filters = {
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        fieldId: req.query.fieldId,
+        status: req.query.status
+    };
+    try {
+        const bookings = await models.getOwnerBookings(ownerId, filters);
+        res.json(bookings);
+    } catch (error) {
+        console.error('getOwnerBookingsController error:', error);
+        res.status(500).json({ message: "فشل جلب الحجوزات." });
+    }
+}
+
+// -------------------------------------
+// 19. تأكيد حجز نقدي (للحجوزات المعلقة)
+// -------------------------------------
+async function confirmOwnerBookingController(req, res) {
+    const { bookingId } = req.params;
+    const ownerId = req.user.id;
+
+    try {
+        const result = await withTransaction(async (client) => {
+            // التحقق من أن المالك يمتلك الملعب للحجز المعني (أمني)
+            const checkQuery = 'SELECT f.owner_id FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE b.booking_id = $1';
+            const checkResult = await client.query(checkQuery, [bookingId]);
+
+            if (checkResult.rows.length === 0 || checkResult.rows[0].owner_id !== ownerId) {
+                throw new Error("غير مصرح لك بتأكيد هذا الحجز.");
+            }
+            
+            // يتم استخدام دالة تحديث الحالة العامة ( booked_unconfirmed -> booked_confirmed )
+            return await models.updateBookingStatus(client, bookingId, 'booked_confirmed', true);
+        });
+        
+        res.json({ message: "✅ تم تأكيد الحجز النقدي بنجاح." });
+    } catch (error) {
+        console.error('confirmOwnerBookingController error:', error.message);
+        res.status(409).json({ message: error.message || "فشل تأكيد الحجز." });
+    }
+}
+
+// -------------------------------------
+// 20. إلغاء حجز (يتم أيضاً استخدامه لحالات عدم الحضور)
+// -------------------------------------
+async function cancelOwnerBookingController(req, res) {
+    const { bookingId } = req.params;
+    const ownerId = req.user.id;
+
+    try {
+        const result = await withTransaction(async (client) => {
+            // التحقق من أن المالك يمتلك الملعب للحجز المعني (أمني)
+            const checkQuery = 'SELECT f.owner_id FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE b.booking_id = $1';
+            const checkResult = await client.query(checkQuery, [bookingId]);
+
+            if (checkResult.rows.length === 0 || checkResult.rows[0].owner_id !== ownerId) {
+                throw new Error("غير مصرح لك بإلغاء هذا الحجز.");
+            }
+            
+            // إلغاء الحجز (يجب أن يتم تحديث الحالة إلى 'missed' أو 'cancelled' وإعادة الساعة كـ available)
+            return await models.updateBookingStatus(client, bookingId, 'missed', false); 
+        });
+        
+        res.json({ message: "❌ تم إلغاء الحجز بنجاح." });
+    } catch (error) {
+        console.error('cancelOwnerBookingController error:', error.message);
+        res.status(409).json({ message: error.message || "فشل إلغاء الحجز." });
+    }
+}
+
+module.exports = {
+    // ... (تأكد من تصدير جميع الدوال الجديدة هنا)
+    getOwnerDashboardController,
+    getOwnerStadiumsController,
+    getOwnerBookingsController,
+    confirmOwnerBookingController,
+    cancelOwnerBookingController,
+    // ...
+};
