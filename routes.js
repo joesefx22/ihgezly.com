@@ -34,3 +34,25 @@ router.get('/player/requests', verifyToken, checkRole(['player']), getPlayerRequ
 // router.post('/booking/create', verifyToken, checkRole(['player']), createBooking); 
 
 module.exports = router;
+
+// routes.js (إضافة المسارات التالية)
+
+// ... (تأكد من استيراد الدوال الجديدة من controllers) ...
+
+// -------------------------------------
+// مسارات الحجز (Booking) - محمية بالـ player role
+// -------------------------------------
+
+// 1. جلب الملاعب المتاحة
+router.get('/api/fields/available', verifyToken, checkRole(['player']), getAvailableFieldsController);
+
+// 2. جلب الساعات المتاحة
+router.get('/api/fields/slots', verifyToken, checkRole(['player']), getAvailableSlotsController);
+
+// 3. إنشاء حجز جديد (المعاملة الحاسمة)
+router.post('/api/booking/create', verifyToken, checkRole(['player']), createBookingController);
+
+// 4. جلب تفاصيل الحجز للدفع (لصفحة payment.html)
+router.get('/api/booking/:bookingId/details', verifyToken, checkRole(['player']), getBookingDetailsController);
+
+// ... (بقية ملف routes.js)
