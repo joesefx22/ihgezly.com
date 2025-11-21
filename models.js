@@ -531,3 +531,116 @@ module.exports = {
     getAssignedEmployees,
     // ...
 };
+
+// models.js (إضافات لدوال الحجز والدفع)
+
+/**
+ * جلب تفاصيل الملعب وسعر العربون
+ */
+async function getFieldDetailsForBooking(fieldId) {
+    const query = `
+        SELECT field_id, name, price_per_hour, deposit_amount, owner_id
+        FROM fields
+        WHERE field_id = $1 AND is_active = TRUE
+    `;
+    const result = await execQuery(query, [fieldId]);
+    return result.rows[0];
+}
+
+/**
+ * جلب حالة فتح الساعة المحددة
+ * @returns { 'available' | 'booked_confirmed' | 'booked_unconfirmed' | 'blocked' }
+ */
+async function getSlotStatus(fieldId, bookingDate, startTime) {
+    // التحقق من الحجوزات المؤكدة أو المعلقة
+    const query = `
+        SELECT status
+        FROM bookings
+        WHERE field_id = $1 
+        AND booking_date = $2 
+        AND start_time = $3
+        AND status IN ('booked_confirmed', 'booked_unconfirmed')
+    `;
+    const result = await execQuery(query, [fieldId, bookingDate, startTime]);
+    if (result.rows.length > 0) {
+        return result.rows[0].status;
+    }
+    
+    // التحقق من الساعات المحظورة (مغلقة من المالك/الأدمن)
+    const blockQuery = `
+        SELECT *
+        FROM blocked_slots
+        WHERE field_id = $1 
+        AND block_date = $2 
+        AND start_time = $3
+    `;
+    const blockResult = await execQuery(blockQuery, [fieldId, bookingDate, startTime]);
+    if (blockResult.rows.length > 0) {
+        return 'blocked';
+    }
+
+    return 'available';
+}
+
+/**
+ * إنشاء حجز جديد (المرحلة الأولى: حجز الساعة)
+ */
+async function createNewBooking(userId, fieldId, bookingDate, startTime, endTime, totalAmount, depositAmount, playersNeeded, initialStatus, client) {
+    const query = `
+        INSERT INTO bookings (
+            user_id, field_id, booking_date, start_time, end_time, 
+            total_amount, deposit_amount, players_needed, status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING booking_id, total_amount, deposit_amount, status
+    `;
+    const result = await execQuery(query, [
+        userId, fieldId, bookingDate, startTime, endTime, 
+        totalAmount, depositAmount, playersNeeded, initialStatus
+    ], client);
+    return result.rows[0];
+}
+
+/**
+ * تحديث حالة الحجز بعد الدفع
+ */
+async function updateBookingStatus(bookingId, newStatus, paymentReference = null, client) {
+    const query = `
+        UPDATE bookings
+        SET status = $1, 
+            payment_ref = COALESCE($2, payment_ref),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE booking_id = $3
+        RETURNING booking_id, status
+    `;
+    const result = await execQuery(query, [newStatus, paymentReference, bookingId], client);
+    return result.rows[0];
+}
+
+/**
+ * جلب معلومات الحجز لصفحة الدفع
+ */
+async function getBookingInfoForPayment(bookingId, userId) {
+    const query = `
+        SELECT 
+            b.booking_id, b.booking_date, b.start_time, b.end_time,
+            b.deposit_amount, b.total_amount, b.status,
+            f.name AS field_name, f.location
+        FROM bookings b
+        JOIN fields f ON b.field_id = f.field_id
+        WHERE b.booking_id = $1 AND b.user_id = $2
+    `;
+    const result = await execQuery(query, [bookingId, userId]);
+    return result.rows[0];
+}
+
+// ... (أضف الدوال الجديدة إلى تصدير الدوال)
+module.exports = {
+    // ... (تصدير الدوال السابقة)
+    getFieldDetailsForBooking,
+    getSlotStatus,
+    createNewBooking,
+    updateBookingStatus,
+    getBookingInfoForPayment,
+    // ...
+};
