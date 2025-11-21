@@ -784,3 +784,145 @@ module.exports = {
     cancelOwnerBookingController,
     // ...
 };
+
+// controllers.js (إضافات لمنطق الأدمن)
+
+// ... (تأكد من استيراد models و withTransaction) ...
+// ... (يفترض وجود دالة createActivityLog من خطوات سابقة) ...
+
+// -------------------------------------
+// 21. جلب إحصائيات لوحة تحكم الأدمن
+// -------------------------------------
+async function getAdminDashboardController(req, res) {
+    try {
+        const stats = await models.getAdminDashboardStats();
+        res.json(stats);
+    } catch (error) {
+        console.error('getAdminDashboardController error:', error);
+        res.status(500).json({ message: "فشل جلب إحصائيات لوحة التحكم." });
+    }
+}
+
+// -------------------------------------
+// 22. جلب جميع المستخدمين
+// -------------------------------------
+async function getAllUsersController(req, res) {
+    try {
+        const users = await models.getAllUsers();
+        res.json(users);
+    } catch (error) {
+        console.error('getAllUsersController error:', error);
+        res.status(500).json({ message: "فشل جلب المستخدمين." });
+    }
+}
+
+// -------------------------------------
+// 23. جلب جميع الملاعب (للأدمن)
+// -------------------------------------
+async function getAllStadiumsController(req, res) {
+    try {
+        const stadiums = await models.getAllStadiums();
+        res.json(stadiums);
+    } catch (error) {
+        console.error('getAllStadiumsController error:', error);
+        res.status(500).json({ message: "فشل جلب الملاعب." });
+    }
+}
+
+// -------------------------------------
+// 24. جلب المستخدمين المنتظرين الموافقة
+// -------------------------------------
+async function getPendingManagersController(req, res) {
+    try {
+        const managers = await models.getPendingManagers();
+        res.json(managers);
+    } catch (error) {
+        console.error('getPendingManagersController error:', error);
+        res.status(500).json({ message: "فشل جلب طلبات الموافقة." });
+    }
+}
+
+// -------------------------------------
+// 25. الموافقة على مستخدم/مالك
+// -------------------------------------
+async function approveUserController(req, res) {
+    const { userId } = req.params;
+    const adminId = req.user.id;
+    
+    try {
+        const updatedUser = await withTransaction(async (client) => {
+            const user = await models.getUserById(userId, client);
+            if (!user) throw new Error("المستخدم غير موجود.");
+            
+            // التأكد من أن الدور لا يزال يتطلب موافقة
+            if (user.role === 'player') {
+                 // إذا كان player، يتم تحويله إلى دوره المطلوب (owner أو employee) وتفعيله
+                 if (!req.body.targetRole || !['owner', 'employee', 'admin'].includes(req.body.targetRole)) {
+                     throw new Error("يجب تحديد دور مستهدف (owner/employee/admin).");
+                 }
+                 const approved = await models.updateApprovalStatus(userId, true, req.body.targetRole);
+                 return approved;
+            } else {
+                 // تحديث الحالة فقط (is_approved = TRUE)
+                 const approved = await models.updateApprovalStatus(userId, true, user.role);
+                 return approved;
+            }
+        });
+
+        // تسجيل النشاط
+        await models.createActivityLog(adminId, 'APPROVAL', `تمت الموافقة على المستخدم: ${updatedUser.name} (${updatedUser.role})`, updatedUser.user_id);
+        
+        res.json({ message: `✅ تمت الموافقة على ${updatedUser.name} بنجاح.` });
+    } catch (error) {
+        console.error('approveUserController error:', error);
+        res.status(500).json({ message: error.message || "فشل الموافقة على المستخدم." });
+    }
+}
+
+// -------------------------------------
+// 26. رفض (أو تعطيل) مستخدم
+// -------------------------------------
+async function rejectUserController(req, res) {
+    const { userId } = req.params;
+    const adminId = req.user.id;
+
+    try {
+        // الرفض يعني ترك is_approved = FALSE أو إرجاع الدور إلى player (حسب المنطق)
+        // الأسهل هنا هو إبقائه كـ unapproved أو تعطيل الحساب تماماً. سنستخدم هنا إعادته إلى 'player' وتعطيل الموافقة
+        const rejectedUser = await models.updateApprovalStatus(userId, false, 'player'); 
+
+        // تسجيل النشاط
+        await models.createActivityLog(adminId, 'REJECTION', `تم رفض/تعطيل حساب المستخدم: ${rejectedUser.name}، وتم إرجاع دوره إلى player.`, rejectedUser.user_id);
+
+        res.json({ message: `❌ تم رفض/تعطيل المستخدم ${rejectedUser.name} بنجاح.` });
+    } catch (error) {
+        console.error('rejectUserController error:', error);
+        res.status(500).json({ message: "فشل رفض المستخدم." });
+    }
+}
+
+// -------------------------------------
+// 27. جلب سجلات النشاط
+// -------------------------------------
+async function getActivityLogsController(req, res) {
+    const limit = parseInt(req.query.limit) || 20;
+    try {
+        const logs = await models.getActivityLogs(limit);
+        res.json(logs);
+    } catch (error) {
+        console.error('getActivityLogsController error:', error);
+        res.status(500).json({ message: "فشل جلب سجلات النشاط." });
+    }
+}
+
+module.exports = {
+    // ... (تصدير جميع الدوال الأخرى)
+    getAdminDashboardController,
+    getAllUsersController,
+    getAllStadiumsController,
+    getPendingManagersController,
+    approveUserController,
+    rejectUserController,
+    getActivityLogsController,
+    // ...
+};
