@@ -926,3 +926,161 @@ module.exports = {
     getActivityLogsController,
     // ...
 };
+
+// controllers.js (إضافات لمنطق CRUD الملاعب)
+
+// ... (تأكد من استيراد models و withTransaction و createActivityLog) ...
+
+// -------------------------------------
+// 28. إنشاء ملعب جديد (Admin/Owner)
+// -------------------------------------
+async function createFieldController(req, res) {
+    const { name, location, price_per_hour, deposit_amount, features, owner_id } = req.body;
+    const userId = req.user.id; // هو المنشئ (سواء كان أدمن أو مالك)
+
+    // إذا كان المنشئ أدمن، يجب تمرير owner_id في الـ body.
+    // إذا كان المنشئ مالك، يتم استخدام userId الخاص به.
+    const actualOwnerId = req.user.role === 'admin' ? owner_id : userId;
+    
+    // التحقق الأساسي
+    if (!name || !location || !price_per_hour || !actualOwnerId) {
+        return res.status(400).json({ message: "يرجى توفير الاسم والموقع والسعر ومعرف المالك." });
+    }
+
+    try {
+        const newField = await withTransaction(async (client) => {
+            const field = await models.createField(
+                actualOwnerId,
+                name,
+                location,
+                parseFloat(price_per_hour),
+                parseFloat(deposit_amount || 0),
+                features || [],
+                client
+            );
+            return field;
+        });
+
+        const logAction = req.user.role === 'admin' ? 'ADMIN_CREATE_FIELD' : 'OWNER_CREATE_FIELD';
+        await models.createActivityLog(userId, logAction, `تم إنشاء الملعب: ${newField.name} (ID: ${newField.field_id})`, newField.field_id);
+        
+        res.status(201).json({ 
+            message: "تم إنشاء الملعب بنجاح.",
+            fieldId: newField.field_id 
+        });
+    } catch (error) {
+        console.error('createFieldController error:', error);
+        res.status(500).json({ message: "فشل إنشاء الملعب." });
+    }
+}
+
+// -------------------------------------
+// 29. تحديث بيانات ملعب (Admin/Owner)
+// -------------------------------------
+async function updateFieldController(req, res) {
+    const { fieldId } = req.params;
+    const updates = req.body;
+    const userId = req.user.id;
+
+    try {
+        // التحقق من الملكية/الصلاحية قبل التحديث
+        const field = await models.getFieldById(fieldId);
+        if (!field) return res.status(404).json({ message: "الملعب غير موجود." });
+
+        if (req.user.role !== 'admin' && field.owner_id !== userId) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لتعديل هذا الملعب." });
+        }
+        
+        const updatedField = await withTransaction(async (client) => {
+            // تصفية البيانات التي لا يجب تحديثها
+            delete updates.field_id;
+            delete updates.owner_id;
+
+            const updated = await models.updateField(fieldId, updates, client);
+            return updated;
+        });
+
+        if (!updatedField) return res.status(400).json({ message: "لا توجد بيانات لتحديثها." });
+
+        const logAction = req.user.role === 'admin' ? 'ADMIN_UPDATE_FIELD' : 'OWNER_UPDATE_FIELD';
+        await models.createActivityLog(userId, logAction, `تم تحديث بيانات الملعب: ${updatedField.name} (ID: ${fieldId})`);
+
+        res.json({ 
+            message: "تم تحديث بيانات الملعب بنجاح.",
+            fieldId: fieldId 
+        });
+    } catch (error) {
+        console.error('updateFieldController error:', error);
+        res.status(500).json({ message: "فشل تحديث بيانات الملعب." });
+    }
+}
+
+// -------------------------------------
+// 30. حذف/تعطيل ملعب (Admin/Owner)
+// -------------------------------------
+async function deleteFieldController(req, res) {
+    const { fieldId } = req.params;
+    const userId = req.user.id;
+
+    try {
+        const field = await models.getFieldById(fieldId);
+        if (!field) return res.status(404).json({ message: "الملعب غير موجود." });
+
+        if (req.user.role !== 'admin' && field.owner_id !== userId) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لتعطيل هذا الملعب." });
+        }
+        
+        const deletedField = await withTransaction(async (client) => {
+            // تعطيل الملعب
+            const deleted = await models.deleteField(fieldId, client);
+            return deleted;
+        });
+
+        const logAction = req.user.role === 'admin' ? 'ADMIN_DELETE_FIELD' : 'OWNER_DELETE_FIELD';
+        await models.createActivityLog(userId, logAction, `تم تعطيل الملعب: ${deletedField.name} (ID: ${fieldId})`);
+
+        res.json({ message: `تم تعطيل الملعب "${deletedField.name}" بنجاح.` });
+    } catch (error) {
+        console.error('deleteFieldController error:', error);
+        res.status(500).json({ message: "فشل تعطيل الملعب." });
+    }
+}
+
+// -------------------------------------
+// 31. تفعيل ملعب (Admin/Owner)
+// -------------------------------------
+async function activateFieldController(req, res) {
+    const { fieldId } = req.params;
+    const userId = req.user.id;
+
+    try {
+        const field = await models.getFieldById(fieldId);
+        if (!field) return res.status(404).json({ message: "الملعب غير موجود." });
+
+        if (req.user.role !== 'admin' && field.owner_id !== userId) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لتفعيل هذا الملعب." });
+        }
+        
+        const activatedField = await withTransaction(async (client) => {
+            const activated = await models.activateField(fieldId, client);
+            return activated;
+        });
+
+        const logAction = req.user.role === 'admin' ? 'ADMIN_ACTIVATE_FIELD' : 'OWNER_ACTIVATE_FIELD';
+        await models.createActivityLog(userId, logAction, `تم تفعيل الملعب: ${activatedField.name} (ID: ${fieldId})`);
+
+        res.json({ message: `✅ تم تفعيل الملعب "${activatedField.name}" بنجاح.` });
+    } catch (error) {
+        console.error('activateFieldController error:', error);
+        res.status(500).json({ message: "فشل تفعيل الملعب." });
+    }
+}
+
+module.exports = {
+    // ... (تصدير جميع الدوال الأخرى)
+    createFieldController,
+    updateFieldController,
+    deleteFieldController,
+    activateFieldController,
+    // ...
+};
