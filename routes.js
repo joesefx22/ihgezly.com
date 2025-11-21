@@ -213,3 +213,37 @@ router.delete('/api/fields/:fieldId', verifyToken, checkRole(['admin', 'owner'])
 router.post('/api/fields/:fieldId/activate', verifyToken, checkRole(['admin', 'owner']), activateFieldController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافات لمسارات الحجز والدفع)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    bookingRequestController,
+    getBookingInfoController,
+    initiatePaymentController,
+    paymentCallbackController,
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات الحجز (Booking) - للاعبين فقط
+// -------------------------------------
+
+// 1. طلب حجز ساعة (يقرر ما إذا كان مطلوب دفع عربون أم لا)
+router.post('/api/booking/request', verifyToken, checkRole(['player']), bookingRequestController);
+
+// 2. جلب معلومات الحجز للدفع
+router.get('/api/booking/:bookingId/info', verifyToken, checkRole(['player']), getBookingInfoController);
+
+// 3. بدء عملية الدفع (الحصول على رابط PayMob)
+router.post('/api/booking/:bookingId/pay', verifyToken, checkRole(['player']), initiatePaymentController);
+
+// -------------------------------------
+// مسارات إشعارات الدفع (Callback/Webhook) - بدون حماية Token
+// -------------------------------------
+
+// 4. معالجة إشعار الدفع من PayMob
+router.get('/api/payment/callback', paymentCallbackController); 
+// Note: يُفضل استخدام POST في الإنتاج، لكن GET أسهل للمحاكاة عبر التوجيه.
+
+// ... (بقية ملف routes.js)
