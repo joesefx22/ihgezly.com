@@ -392,3 +392,185 @@ module.exports = {
     // ... (تصدير جميع الدوال الأخرى)
     confirmPaymentController 
 };
+
+// controllers.js (تعديلات وإضافات)
+
+const axios = require('axios'); // تأكد من تثبيتها
+const crypto = require('crypto'); // مكتبة Crypto لتوليد HMAC (موجودة في Node.js)
+const { withTransaction } = require('./db');
+const models = require('./models'); 
+// ... (بقية الـ Imports) ...
+
+// جلب مفاتيح Paymob من البيئة
+const {
+    PAYMOB_API_KEY,
+    PAYMOB_INTEGRATION_ID,
+    PAYMOB_HMAC_SECRET, 
+    PAYMOB_IFRAME_ID
+} = process.env; 
+
+const PAYMOB_BASE_URL = 'https://accept.paymob.com/api';
+
+// -------------------------------------
+// دوال الاتصال بـ Paymob
+// -------------------------------------
+
+async function getAuthToken() {
+    const response = await axios.post(`${PAYMOB_BASE_URL}/auth/tokens`, { api_key: PAYMOB_API_KEY });
+    return response.data.token;
+}
+
+async function registerOrder(authToken, bookingId, amountCents) {
+    const response = await axios.post(`${PAYMOB_BASE_URL}/ecommerce/orders`, {
+        auth_token: authToken,
+        delivery_needed: 'false',
+        amount_cents: amountCents.toFixed(0), 
+        merchant_order_id: `EHGLY-${bookingId}`, // رقم طلب فريد
+        items: []
+    });
+    return response.data;
+}
+
+async function getPaymentKey(authToken, orderId, amountCents, user) {
+    const response = await axios.post(`${PAYMOB_BASE_URL}/acceptance/payment_keys`, {
+        auth_token: authToken,
+        amount_cents: amountCents.toFixed(0),
+        expiration: 3600, 
+        order_id: orderId,
+        billing_data: {
+            // بيانات العميل المطلوبة
+            email: user.email,
+            first_name: user.name.split(' ')[0] || 'Player',
+            phone_number: user.phone || '01000000000', 
+            last_name: user.name.split(' ').slice(1).join(' ') || 'User',
+            country: 'EG', city: 'NA', street: 'NA', apartment: 'NA', floor: 'NA', building: 'NA', shipping_method: 'NA', postal_code: 'NA', state: 'NA'
+        },
+        currency: 'EGP',
+        integration_id: PAYMOB_INTEGRATION_ID,
+    });
+    return response.data.token;
+}
+
+
+// -------------------------------------
+// تعديل دالة createBookingController
+// -------------------------------------
+
+// ... (تضمين المنطق الحالي لـ createBookingController) ...
+async function createBookingController(req, res) {
+    // ... (منطق جلب البيانات، التحقق، وحساب totalAmount و depositAmount) ...
+
+    try {
+        const result = await withTransaction(async (client) => {
+            // ... (منطق التحقق من التوفر وإنشاء سجل الحجز newBooking) ...
+            
+            // 5. المنطق الحاسم لتوليد رابط Paymob
+            if (depositAmount > 0) {
+                // 5.1 جلب تفاصيل اللاعب
+                const userProfile = await client.query('SELECT name, email, phone FROM users WHERE user_id = $1', [playerId]);
+                const user = userProfile.rows[0];
+
+                // 5.2 بدء عملية Paymob (جنيه إلى قرش)
+                const amountCents = depositAmount * 100; 
+                const authToken = await getAuthToken();
+                const orderData = await registerOrder(authToken, newBooking.booking_id, amountCents);
+                
+                const paymentKey = await getPaymentKey(authToken, orderData.id, amountCents, user);
+                
+                // بناء رابط التوجيه لصفحة الدفع الآمنة (iFrame URL)
+                const paymentUrl = `https://accept.paymob.com/api/acceptance/iframes/${PAYMOB_IFRAME_ID}?payment_token=${paymentKey}`;
+
+                // حفظ رقم طلب Paymob في قاعدة البيانات للمتابعة
+                await client.query('UPDATE bookings SET payment_reference = $1 WHERE booking_id = $2', 
+                    [orderData.id, newBooking.booking_id]);
+                
+                return { 
+                    booking: newBooking, 
+                    deposit_required: true, 
+                    // 🚨 نرسل رابط Paymob الفعلي للواجهة الأمامية
+                    payment_url: paymentUrl
+                };
+            }
+            
+            // ... (منطق الحجز بدون عربون) ...
+        });
+        
+        res.json(result); 
+
+    } catch (error) {
+        console.error('Paymob Integration Error:', error.message);
+        res.status(500).json({ message: "فشل الحجز. يرجى مراجعة الدعم أو محاولة الدفع لاحقاً." }); 
+    }
+}
+
+
+// -------------------------------------
+// 12. Webhook Paymob (المسار الآمن لتأكيد الدفع)
+// -------------------------------------
+
+function checkPaymobHMAC(obj, secret) {
+    // بناء سلسلة الـ HMAC المطلوبة من Paymob (التحقق من التوقيع)
+    const sortedKeys = Object.keys(obj)
+        .filter(key => key !== 'hmac' && key !== 'obj') 
+        .sort();
+        
+    const dataToHash = sortedKeys.map(key => obj[key]).join('');
+    
+    const hash = crypto.createHmac('sha512', secret)
+        .update(dataToHash)
+        .digest('hex');
+
+    return hash === obj.hmac;
+}
+
+async function paymobWebhookController(req, res) {
+    // Paymob ترسل البيانات المهمة كـ Query Parameters (موجودة في req.query)
+    const data = req.query; 
+    
+    try {
+        // 1. التحقق الأمني من توقيع HMAC
+        if (!checkPaymobHMAC(data, PAYMOB_HMAC_SECRET)) {
+            return res.status(401).send('HMAC signature failed');
+        }
+        
+        // البيانات موجودة داخل حقل 'obj'
+        const transactionData = JSON.parse(data.obj); 
+
+        // 2. التحقق من حالة الدفع
+        if (transactionData.success === true && transactionData.pending === false) {
+            
+            const bookingIdFromPaymob = transactionData.order.merchant_order_id.replace('EHGLY-', '');
+            const paymobOrderId = transactionData.order.id;
+            
+            // 3. تحديث حالة الحجز في قاعدة البيانات (معاملة آمنة)
+            await withTransaction(async (client) => {
+                const updateQuery = `
+                    UPDATE bookings
+                    SET status = 'booked_confirmed', deposit_paid = TRUE, payment_reference = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE booking_id = $1 AND status = 'booked_unconfirmed' 
+                `;
+                const result = await client.query(updateQuery, [bookingIdFromPaymob, paymobOrderId]);
+                
+                if (result.rowCount > 0) {
+                    console.log(`✅ Webhook: Booking ${bookingIdFromPaymob} confirmed.`);
+                }
+            });
+
+        } else if (transactionData.success === false) {
+            console.log(`⚠️ Webhook: Payment failed for order ${transactionData.order.merchant_order_id}.`);
+        }
+        
+        // يجب أن نرد برمز 200 لـ Paymob
+        res.status(200).send('Webhook received successfully');
+
+    } catch (error) {
+        console.error('PAYMOB WEBHOOK ERROR:', error);
+        res.status(500).send('Internal Server Error');
+    }
+}
+
+module.exports = { 
+    // ... (تصدير جميع الدوال الأخرى)
+    createBookingController, 
+    paymobWebhookController // الدالة الجديدة للـ Webhook
+};
