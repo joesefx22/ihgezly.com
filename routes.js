@@ -65,3 +65,21 @@ const { confirmPaymentController } = require('./controllers');
 router.post('/api/booking/confirm-payment', verifyToken, checkRole(['player']), confirmPaymentController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافة مسار الـ Webhook)
+
+// ... (تأكد من استيراد الدالة الجديدة من controllers) ...
+const { paymobWebhookController } = require('./controllers');
+
+// ... (مساراتك الحالية) ...
+
+// -------------------------------------
+// مسار Paymob Webhook الآمن (لا يحتاج حماية بالتوكن)
+// -------------------------------------
+// هذا المسار يجب تسجيله في إعدادات Paymob Webhook
+router.get('/api/payment/paymob-webhook', paymobWebhookController); 
+// ملاحظة: Paymob يفضل استخدام GET للـ Webhook الذي يرسل البيانات في الـ Query String
+// يمكنك أيضاً إضافة POST إذا كان Webhook مُعداً لإرسال بيانات JSON في الـ Body
+router.post('/api/payment/paymob-webhook', paymobWebhookController); 
+
+module.exports = router;
