@@ -111,3 +111,35 @@ router.post('/api/employee/booking/checkin', verifyToken, checkRole(['employee']
 router.post('/api/employee/booking/confirm-cash', verifyToken, checkRole(['employee']), confirmCashController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافات لمسارات المالك)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    getOwnerDashboardController,
+    getOwnerStadiumsController,
+    getOwnerBookingsController,
+    confirmOwnerBookingController,
+    cancelOwnerBookingController
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات مالك الملعب (Owner) - محمية بالـ owner role
+// -------------------------------------
+
+// 1. جلب إحصائيات لوحة التحكم
+router.get('/api/owner/dashboard', verifyToken, checkRole(['owner']), getOwnerDashboardController);
+
+// 2. جلب الملاعب التابعة للمالك
+router.get('/api/owner/stadiums', verifyToken, checkRole(['owner']), getOwnerStadiumsController);
+
+// 3. جلب حجوزات المالك (مع فلاتر)
+router.get('/api/owner/bookings', verifyToken, checkRole(['owner']), getOwnerBookingsController);
+
+// 4. تأكيد حجز نقدي (للحجوزات المعلقة)
+router.post('/api/owner/bookings/:bookingId/confirm', verifyToken, checkRole(['owner']), confirmOwnerBookingController);
+
+// 5. إلغاء حجز (يستخدم أيضاً كـ لم يحضر)
+router.post('/api/owner/bookings/:bookingId/cancel', verifyToken, checkRole(['owner']), cancelOwnerBookingController);
+
+// ... (بقية ملف routes.js)
