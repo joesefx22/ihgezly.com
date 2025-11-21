@@ -184,3 +184,65 @@ module.exports = {
     createBooking,
     getBookingDetails 
 };
+
+// models.js (إضافة الدوال التالية)
+
+/**
+ * جلب جميع الملاعب المعينة لموظف معين
+ */
+async function getEmployeeAssignedFields(employeeId) {
+    const query = `
+        SELECT f.field_id, f.name, f.location
+        FROM fields f
+        JOIN employee_assignments ea ON f.field_id = ea.field_id
+        WHERE ea.user_id = $1 AND f.is_active = TRUE
+    `;
+    const result = await execQuery(query, [employeeId]);
+    return result.rows;
+}
+
+/**
+ * جلب حجوزات يوم معين لملعب معين
+ */
+async function getBookingsForEmployee(fieldId, date) {
+    const query = `
+        SELECT 
+            b.booking_id, b.booking_date, b.start_time, b.end_time, b.status, 
+            b.total_amount, b.deposit_amount, b.deposit_paid,
+            u.name AS player_name, u.phone AS player_phone
+        FROM bookings b
+        JOIN users u ON b.player_id = u.user_id
+        WHERE b.field_id = $1 AND b.booking_date = $2
+        AND b.status IN ('booked_confirmed', 'booked_unconfirmed', 'played', 'missed')
+        ORDER BY b.start_time ASC
+    `;
+    const result = await execQuery(query, [fieldId, date]);
+    return result.rows;
+}
+
+/**
+ * تحديث حالة الحجز (Check-in/Confirm Cash)
+ */
+async function updateBookingStatus(client, bookingId, status, isCashConfirmed = false) {
+    const updateCash = isCashConfirmed ? ', deposit_paid = TRUE ' : '';
+    
+    const query = `
+        UPDATE bookings
+        SET status = $2, updated_at = CURRENT_TIMESTAMP ${updateCash}
+        WHERE booking_id = $1
+        RETURNING booking_id, status
+    `;
+    // لاحظ استخدام client.query داخل معاملة (Transaction)
+    const result = await client.query(query, [bookingId, status]);
+    if (result.rowCount === 0) {
+        throw new Error("لم يتم العثور على الحجز أو تم تحديثه مسبقاً.");
+    }
+    return result.rows[0];
+}
+
+module.exports = {
+    // ... (تصدير الدوال السابقة)
+    getEmployeeAssignedFields,
+    getBookingsForEmployee,
+    updateBookingStatus
+};
