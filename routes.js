@@ -143,3 +143,44 @@ router.post('/api/owner/bookings/:bookingId/confirm', verifyToken, checkRole(['o
 router.post('/api/owner/bookings/:bookingId/cancel', verifyToken, checkRole(['owner']), cancelOwnerBookingController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافات لمسارات الأدمن)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    getAdminDashboardController,
+    getAllUsersController,
+    getAllStadiumsController,
+    getPendingManagersController,
+    approveUserController,
+    rejectUserController,
+    getActivityLogsController,
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات الأدمن (Admin) - محمية بالـ admin role
+// -------------------------------------
+
+// 1. جلب إحصائيات لوحة التحكم
+router.get('/api/admin/dashboard', verifyToken, checkRole(['admin']), getAdminDashboardController);
+
+// 2. إدارة المستخدمين: جلب الكل
+router.get('/api/admin/users', verifyToken, checkRole(['admin']), getAllUsersController);
+
+// 3. إدارة الملاعب: جلب الكل
+router.get('/api/admin/stadiums', verifyToken, checkRole(['admin']), getAllStadiumsController);
+
+// 4. إدارة الموافقات: جلب الطلبات المعلقة
+router.get('/api/admin/pending-managers', verifyToken, checkRole(['admin']), getPendingManagersController);
+
+// 5. إدارة الموافقات: الموافقة على مستخدم
+router.post('/api/admin/users/:userId/approve', verifyToken, checkRole(['admin']), approveUserController);
+
+// 6. إدارة الموافقات: رفض (أو تعطيل) مستخدم
+router.post('/api/admin/users/:userId/reject', verifyToken, checkRole(['admin']), rejectUserController);
+
+// 7. سجل النشاط
+router.get('/api/admin/activity-logs', verifyToken, checkRole(['admin']), getActivityLogsController);
+
+// ... (بقية ملف routes.js)
