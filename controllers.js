@@ -1292,3 +1292,123 @@ module.exports = {
     paymentCallbackController,
     // ...
 };
+
+// controllers.js (إضافات لمنطق إدارة الأكواد)
+
+// -------------------------------------
+// 36. إنشاء كود جديد (Admin Only)
+// -------------------------------------
+async function createCodeController(req, res) {
+    const { code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at } = req.body;
+    const created_by = req.user.id;
+    
+    if (!code_value || !code_type) {
+        return res.status(400).json({ message: "الاسم والنوع مطلوبان." });
+    }
+
+    try {
+        const newCode = await withTransaction(async (client) => {
+            return models.createCode({
+                code_value: code_value.toUpperCase(),
+                code_type,
+                field_id: field_id || null,
+                discount_percent: discount_percent || 0,
+                fixed_amount: fixed_amount || 0,
+                max_uses: max_uses || 1,
+                expires_at: expires_at || null,
+                created_by
+            }, client);
+        });
+
+        await models.createActivityLog(created_by, 'ADMIN_CREATE_CODE', `تم إنشاء كود: ${newCode.code_value} (${newCode.code_type})`);
+        res.status(201).json({ message: "تم إنشاء الكود بنجاح.", code: newCode });
+
+    } catch (error) {
+        console.error('createCodeController error:', error);
+        if (error.code === '23505') { // PostgreSQL unique violation error code
+             return res.status(409).json({ message: "هذا الكود موجود بالفعل. يرجى اختيار اسم آخر." });
+        }
+        res.status(500).json({ message: "فشل إنشاء الكود." });
+    }
+}
+
+// -------------------------------------
+// 37. جلب جميع الأكواد (Admin Only)
+// -------------------------------------
+async function getAllCodesController(req, res) {
+    try {
+        const codes = await models.getAllCodes();
+        res.json(codes);
+    } catch (error) {
+        console.error('getAllCodesController error:', error);
+        res.status(500).json({ message: "فشل جلب الأكواد." });
+    }
+}
+
+// -------------------------------------
+// 38. تعطيل/تفعيل الكود (Admin Only)
+// -------------------------------------
+async function toggleCodeStatusController(req, res) {
+    const { codeId } = req.params;
+    const { isActive } = req.body; // boolean
+
+    try {
+        const updatedCode = await withTransaction(async (client) => {
+            return models.updateCodeStatus(codeId, isActive, client);
+        });
+
+        if (!updatedCode) return res.status(404).json({ message: "الكود غير موجود." });
+
+        const action = isActive ? 'تفعيل' : 'تعطيل';
+        await models.createActivityLog(req.user.id, `ADMIN_${action}_CODE`, `تم ${action} الكود: ${updatedCode.code_value}`);
+        
+        res.json({ message: `تم ${action} الكود بنجاح.`, code: updatedCode });
+    } catch (error) {
+        console.error('toggleCodeStatusController error:', error);
+        res.status(500).json({ message: "فشل تحديث حالة الكود." });
+    }
+}
+
+// -------------------------------------
+// 39. التحقق من كود الخصم/الدفع (Player Flow)
+// -------------------------------------
+async function validateCodeController(req, res) {
+    const { codeValue, fieldId } = req.body;
+    
+    if (!codeValue || !fieldId) {
+        return res.status(400).json({ message: "يرجى توفير الكود ومعرف الملعب." });
+    }
+
+    try {
+        const code = await models.validateCode(codeValue.toUpperCase(), fieldId);
+
+        if (!code) {
+            return res.status(404).json({ message: "الكود غير صالح، منتهي الصلاحية، أو تجاوز الحد الأقصى للاستخدام." });
+        }
+        
+        // إرسال بيانات الخصم ليتم عرضها في الواجهة الأمامية
+        let discountType = null;
+        let discountAmount = 0;
+        
+        if (code.code_type === 'discount') {
+            discountType = 'percent';
+            discountAmount = code.discount_percent; // النسبة
+        } else if (code.code_type === 'compensation' || code.code_type === 'payment_code') {
+            discountType = 'fixed';
+            discountAmount = code.fixed_amount; // المبلغ الثابت
+        }
+        
+        res.json({
+            message: `تم تطبيق كود ${code.code_type === 'discount' ? 'الخصم' : 'الدفع'} بنجاح.`,
+            codeId: code.code_id,
+            codeType: code.code_type,
+            discountType,
+            discountValue: discountAmount,
+            appliedFieldId: code.field_id
+        });
+
+    } catch (error) {
+        console.error('validateCodeController error:', error);
+        res.status(500).json({ message: "فشل في التحقق من الكود." });
+    }
+}
