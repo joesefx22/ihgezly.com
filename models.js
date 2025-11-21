@@ -246,3 +246,84 @@ module.exports = {
     getBookingsForEmployee,
     updateBookingStatus
 };
+// models.js (أضف هذه الدوال في نهاية الملف)
+
+/**
+ * جلب ملاعب مالك معين
+ */
+async function getOwnerStadiums(ownerId) {
+    const query = `
+        SELECT field_id, name, location, price_per_hour, deposit_amount
+        FROM fields
+        WHERE owner_id = $1 AND is_active = TRUE
+        ORDER BY name ASC
+    `;
+    const result = await execQuery(query, [ownerId]);
+    return result.rows;
+}
+
+/**
+ * جلب حجوزات مالك معين (مع دعم الفلاتر)
+ */
+async function getOwnerBookings(ownerId, filters) {
+    const { startDate, endDate, fieldId, status } = filters;
+    let query = `
+        SELECT 
+            b.booking_id, b.booking_date, b.start_time, b.end_time, b.status, 
+            b.total_amount, b.deposit_amount, b.deposit_paid,
+            f.name AS pitch_name, f.location,
+            u.name AS player_name, u.phone AS player_phone
+        FROM bookings b
+        JOIN fields f ON b.field_id = f.field_id
+        JOIN users u ON b.player_id = u.user_id
+        WHERE f.owner_id = $1
+    `;
+    const params = [ownerId];
+    let paramIndex = 2;
+
+    if (startDate && endDate) {
+        query += ` AND b.booking_date BETWEEN $${paramIndex++} AND $${paramIndex++}`;
+        params.push(startDate, endDate);
+    }
+    if (fieldId) {
+        query += ` AND b.field_id = $${paramIndex++}`;
+        params.push(fieldId);
+    }
+    if (status) {
+        query += ` AND b.status = $${paramIndex++}`;
+        params.push(status);
+    }
+
+    query += ` ORDER BY b.booking_date DESC, b.start_time DESC`;
+    
+    const result = await execQuery(query, params);
+    // تأكد من تمرير ID الذي تستخدمه الواجهة الأمامية
+    return result.rows.map(b => ({
+        ...b,
+        id: b.booking_id
+    }));
+}
+
+/**
+ * جلب إحصائيات مالك الملعب للوحة التحكم
+ */
+async function getOwnerDashboardStats(ownerId) {
+    const query = `
+        SELECT 
+            (SELECT COUNT(*) FROM fields WHERE owner_id = $1 AND is_active = TRUE) AS total_fields,
+            (SELECT COUNT(*) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1) AS total_bookings,
+            (SELECT SUM(total_amount) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1 AND b.status = 'played') AS total_revenue_gross,
+            (SELECT SUM(total_amount) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1 AND b.status = 'booked_confirmed' AND b.booking_date >= CURRENT_DATE) AS upcoming_bookings_value,
+            (SELECT COUNT(*) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1 AND b.status = 'booked_unconfirmed' AND b.deposit_amount = 0) AS pending_cash_bookings
+    `;
+    const result = await execQuery(query, [ownerId]);
+    return result.rows[0] || {};
+}
+
+module.exports = {
+    // ... (تأكد من تصدير جميع الدوال السابقة)
+    getOwnerStadiums,
+    getOwnerBookings,
+    getOwnerDashboardStats,
+    // ...
+};
