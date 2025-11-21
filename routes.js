@@ -184,3 +184,32 @@ router.post('/api/admin/users/:userId/reject', verifyToken, checkRole(['admin'])
 router.get('/api/admin/activity-logs', verifyToken, checkRole(['admin']), getActivityLogsController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافات لمسارات CRUD الملاعب)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    createFieldController,
+    updateFieldController,
+    deleteFieldController,
+    activateFieldController,
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات الملاعب (Fields CRUD)
+// -------------------------------------
+
+// 1. إنشاء ملعب جديد (للأدمن أو المالك)
+router.post('/api/fields', verifyToken, checkRole(['admin', 'owner']), createFieldController);
+
+// 2. تحديث ملعب (للأدمن أو مالك الملعب المحدد)
+router.put('/api/fields/:fieldId', verifyToken, checkRole(['admin', 'owner']), updateFieldController);
+
+// 3. تعطيل/حذف ملعب (للأدمن أو مالك الملعب المحدد)
+router.delete('/api/fields/:fieldId', verifyToken, checkRole(['admin', 'owner']), deleteFieldController);
+
+// 4. تفعيل ملعب (للأدمن أو مالك الملعب المحدد)
+router.post('/api/fields/:fieldId/activate', verifyToken, checkRole(['admin', 'owner']), activateFieldController);
+
+// ... (بقية ملف routes.js)
