@@ -1084,3 +1084,211 @@ module.exports = {
     activateFieldController,
     // ...
 };
+
+// controllers.js (إضافات لمنطق الحجز والدفع)
+
+// ... (تأكد من استيراد models و withTransaction و createActivityLog) ...
+// ... (يفترض وجود دالة getFieldDetailsController لعرض تفاصيل الملعب) ...
+
+// ملاحظة: PAYMOB_KEY من المفترض أن يكون في ملف config أو .env
+const PAYMOB_KEY = process.env.PAYMOB_KEY || 'MOCK_PAYMOB_INTEGRATION_KEY';
+
+// دالة مساعدة لإنشاء مُحاكاة لـ PayMob
+async function mockPaymobPaymentIntent(bookingId, amount, customerInfo) {
+    // في بيئة الإنتاج، يتم هنا استدعاء PayMob API للحصول على payment token
+    // هنا، نُنشئ رابط دفع وهمي ورقم مرجعي
+    const mockRef = `TRX_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const mockPaymentUrl = `/payment.html?id=${bookingId}&amount=${amount}&ref=${mockRef}`; 
+    
+    // يُفترض أن PayMob تتوقع المبلغ بالقرش، لذا نضرب في 100
+    const amountInCents = Math.round(amount * 100);
+
+    console.log(`[MOCK PAYMOB] Creating intent for Booking ID: ${bookingId}, Amount: ${amountInCents} EGP cents`);
+    
+    return {
+        payment_reference: mockRef,
+        payment_url: mockPaymentUrl,
+        amount_to_pay: amount,
+        success: true
+    };
+}
+
+
+// -------------------------------------
+// 32. حجز ساعة ملعب (Booking Request)
+// -------------------------------------
+async function bookingRequestController(req, res) {
+    const { fieldId, bookingDate, startTime, endTime, playersNeeded } = req.body;
+    const userId = req.user.id;
+    
+    if (!fieldId || !bookingDate || !startTime || !endTime) {
+        return res.status(400).json({ message: "يرجى توفير جميع بيانات الحجز." });
+    }
+
+    try {
+        const field = await models.getFieldDetailsForBooking(fieldId);
+        if (!field) return res.status(404).json({ message: "الملعب غير موجود أو غير نشط." });
+
+        const slotStatus = await models.getSlotStatus(fieldId, bookingDate, startTime);
+        if (slotStatus !== 'available') {
+            return res.status(409).json({ message: `الساعة المطلوبة محجوزة بالفعل أو حالتها: ${slotStatus}` });
+        }
+        
+        const totalAmount = field.price_per_hour; // يتم تعديلها لاحقاً إذا كان الحجز لأكثر من ساعة
+        const now = new Date();
+        const bookingDateTime = new Date(`${bookingDate}T${startTime}:00`);
+        const hoursDifference = (bookingDateTime - now) / (1000 * 60 * 60);
+
+        let depositAmount = 0;
+        let initialStatus = 'booked_unconfirmed';
+        
+        // منطق العربون: إذا كان الحجز قبل أكثر من 24 ساعة، يُطلب عربون.
+        if (hoursDifference > 24) {
+            depositAmount = field.deposit_amount;
+        }
+
+        if (depositAmount > 0) {
+            initialStatus = 'booked_unconfirmed'; // ينتظر الدفع
+        } else {
+            // أقل من 24 ساعة، لا يوجد عربون، يصبح الحجز معلقاً لحين تأكيده يدوياً من المالك/الموظف
+            initialStatus = 'pending_owner_approval'; 
+        }
+
+        const booking = await withTransaction(async (client) => {
+            const newBooking = await models.createNewBooking(
+                userId, fieldId, bookingDate, startTime, endTime, 
+                totalAmount, depositAmount, playersNeeded, initialStatus, client
+            );
+            return newBooking;
+        });
+
+        await models.createActivityLog(userId, 'BOOKING_REQUEST', `طلب حجز: ${field.name} في ${bookingDate}، المبلغ: ${totalAmount} ج.م`);
+
+        if (depositAmount > 0) {
+            // إرسال إلى صفحة الدفع
+            res.json({
+                message: "تم حجز الساعة، يرجى إكمال عملية دفع العربون.",
+                requiresPayment: true,
+                depositAmount: depositAmount,
+                bookingId: booking.booking_id
+            });
+        } else {
+            // حجز معلق بانتظار الموافقة اليدوية
+            res.json({
+                message: "تم تسجيل الحجز بنجاح. سيتم تأكيده يدوياً من المالك خلال ساعة.",
+                requiresPayment: false,
+                bookingId: booking.booking_id
+            });
+        }
+
+    } catch (error) {
+        console.error('bookingRequestController error:', error);
+        res.status(500).json({ message: "فشل في تسجيل طلب الحجز." });
+    }
+}
+
+// -------------------------------------
+// 33. جلب تفاصيل الحجز للدفع
+// -------------------------------------
+async function getBookingInfoController(req, res) {
+    const { bookingId } = req.params;
+    const userId = req.user.id;
+
+    try {
+        const booking = await models.getBookingInfoForPayment(bookingId, userId);
+
+        if (!booking) return res.status(404).json({ message: "الحجز غير موجود أو لا تملك الصلاحية." });
+        if (booking.status !== 'booked_unconfirmed') return res.status(400).json({ message: "حالة الحجز لا تتطلب الدفع حالياً." });
+        if (booking.deposit_amount === 0) return res.status(400).json({ message: "هذا الحجز لا يتطلب عربوناً." });
+
+        res.json(booking);
+    } catch (error) {
+        console.error('getBookingInfoController error:', error);
+        res.status(500).json({ message: "فشل جلب تفاصيل الحجز." });
+    }
+}
+
+// -------------------------------------
+// 34. بدء عملية الدفع (PayMob Integration Mock)
+// -------------------------------------
+async function initiatePaymentController(req, res) {
+    const { bookingId, customerInfo } = req.body;
+    const userId = req.user.id;
+
+    if (!bookingId) return res.status(400).json({ message: "معرف الحجز مطلوب." });
+
+    try {
+        const booking = await models.getBookingInfoForPayment(bookingId, userId);
+        if (!booking) return res.status(404).json({ message: "الحجز غير موجود أو لا تملك الصلاحية." });
+        if (booking.status !== 'booked_unconfirmed') return res.status(400).json({ message: "حالة الحجز لا تتطلب الدفع حالياً." });
+
+        const amountToPay = booking.deposit_amount;
+        if (amountToPay <= 0) return res.status(400).json({ message: "لا يوجد عربون مستحق للدفع." });
+
+        // محاكاة الاتصال بخدمة الدفع
+        const paymentIntent = await mockPaymobPaymentIntent(bookingId, amountToPay, customerInfo);
+
+        if (paymentIntent.success) {
+            res.json({
+                message: "تم إنشاء طلب الدفع بنجاح.",
+                payment_url: paymentIntent.payment_url,
+                payment_reference: paymentIntent.payment_reference,
+            });
+        } else {
+            res.status(500).json({ message: "فشل في إنشاء رابط الدفع." });
+        }
+    } catch (error) {
+        console.error('initiatePaymentController error:', error);
+        res.status(500).json({ message: "فشل في بدء عملية الدفع." });
+    }
+}
+
+// -------------------------------------
+// 35. معالجة إشعار الدفع (Webhook/Callback Mock)
+// -------------------------------------
+async function paymentCallbackController(req, res) {
+    const { booking_id, success, reference } = req.query; // يتم استخدام query params لسهولة المحاكاة
+
+    // ملاحظة: في PayMob الحقيقية، يتم التحقق من التوقيع (HMAC) هنا لأسباب أمنية
+    if (!booking_id || !reference) {
+        return res.status(400).json({ message: "بيانات الإشعار غير مكتملة." });
+    }
+
+    try {
+        if (success === 'true') {
+            const updatedBooking = await withTransaction(async (client) => {
+                const updated = await models.updateBookingStatus(booking_id, 'booked_confirmed', reference, client);
+                return updated;
+            });
+
+            await models.createActivityLog(updatedBooking.user_id, 'PAYMENT_SUCCESS', `تم تأكيد دفع عربون الحجز ${booking_id} بنجاح. مرجع الدفع: ${reference}`);
+            
+            // في البيئة الحقيقية، يتم إرسال بريد تأكيد هنا.
+            // نعيد توجيه المستخدم إلى صفحة التأكيد
+            return res.redirect(`/payment.html?status=success&ref=${reference}&booking_id=${booking_id}`);
+
+        } else {
+            // فشل الدفع، قد يتم إرجاع حالة الحجز إلى 'cancelled' أو 'failed_payment'
+            await withTransaction(async (client) => {
+                await models.updateBookingStatus(booking_id, 'failed_payment', reference, client);
+            });
+            
+            await models.createActivityLog(null, 'PAYMENT_FAILED', `فشل دفع عربون الحجز ${booking_id}. مرجع الدفع: ${reference}`);
+            
+            return res.redirect(`/payment.html?status=failure&ref=${reference}&booking_id=${booking_id}`);
+        }
+    } catch (error) {
+        console.error('paymentCallbackController error:', error);
+        // في الـ Webhook الحقيقي يجب إرجاع 200/400/500 code فقط
+        res.status(500).json({ message: "خطأ داخلي في معالجة الإشعار." });
+    }
+}
+
+module.exports = {
+    // ... (تصدير جميع الدوال الأخرى)
+    bookingRequestController,
+    getBookingInfoController,
+    initiatePaymentController,
+    paymentCallbackController,
+    // ...
+};
