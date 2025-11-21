@@ -83,3 +83,31 @@ router.get('/api/payment/paymob-webhook', paymobWebhookController);
 router.post('/api/payment/paymob-webhook', paymobWebhookController); 
 
 module.exports = router;
+
+// routes.js (إضافات لمسارات الموظف)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    getEmployeeFieldsController, 
+    getTodayBookingsController,
+    checkInController,
+    confirmCashController 
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات الموظف (Employee) - محمية بالـ employee role
+// -------------------------------------
+
+// 1. جلب الملاعب المعينة
+router.get('/api/employee/fields', verifyToken, checkRole(['employee']), getEmployeeFieldsController);
+
+// 2. جلب الحجوزات اليومية لملعب
+router.get('/api/employee/bookings', verifyToken, checkRole(['employee']), getTodayBookingsController);
+
+// 3. تسجيل الحضور (Check-in)
+router.post('/api/employee/booking/checkin', verifyToken, checkRole(['employee']), checkInController);
+
+// 4. تأكيد الدفع النقدي للحجوزات قصيرة الأجل (أقل من 24 ساعة)
+router.post('/api/employee/booking/confirm-cash', verifyToken, checkRole(['employee']), confirmCashController);
+
+// ... (بقية ملف routes.js)
