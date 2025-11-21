@@ -644,3 +644,101 @@ module.exports = {
     getBookingInfoForPayment,
     // ...
 };
+
+// models.js (إضافات لدوال إدارة الأكواد)
+
+/**
+ * دالة مساعدة لجلب الكود بالمعرف (مطلوبة في Booking Request Controller)
+ */
+async function getCodeById(codeId, client = null) {
+    const query = `
+        SELECT *
+        FROM discount_codes
+        WHERE code_id = $1
+    `;
+    const result = await execQuery(query, [codeId], client);
+    return result.rows[0];
+}
+
+/**
+ * 1. إنشاء كود جديد (Admin Only)
+ */
+async function createCode(codeData, client) {
+    const { code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at, created_by } = codeData;
+    const query = `
+        INSERT INTO discount_codes (code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *
+    `;
+    const result = await execQuery(query, [code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at, created_by], client);
+    return result.rows[0];
+}
+
+/**
+ * 2. جلب جميع الأكواد (Admin Only)
+ */
+async function getAllCodes() {
+    const query = `
+        SELECT c.*, f.name AS field_name, u.name AS creator_name
+        FROM discount_codes c
+        LEFT JOIN fields f ON c.field_id = f.field_id
+        LEFT JOIN users u ON c.created_by = u.user_id
+        ORDER BY c.created_at DESC
+    `;
+    const result = await execQuery(query);
+    return result.rows;
+}
+
+/**
+ * 3. تحديث حالة الكود (تعطيل/تفعيل) (Admin Only)
+ */
+async function updateCodeStatus(codeId, isActive, client) {
+    const query = `
+        UPDATE discount_codes
+        SET is_active = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE code_id = $2
+        RETURNING *
+    `;
+    const result = await execQuery(query, [isActive, codeId], client);
+    return result.rows[0];
+}
+
+/**
+ * 4. التحقق من الكود قبل الحجز (Player Flow)
+ */
+async function validateCode(codeValue, fieldId = null) {
+    const query = `
+        SELECT *
+        FROM discount_codes
+        WHERE code_value = $1
+          AND is_active = TRUE
+          AND used_count < max_uses
+          AND (expires_at IS NULL OR expires_at > NOW())
+          AND (field_id IS NULL OR field_id = $2)
+    `;
+    const result = await execQuery(query, [codeValue, fieldId]);
+    return result.rows[0];
+}
+
+/**
+ * 5. تسجيل استخدام الكود (داخل transaction الحجز)
+ */
+async function incrementCodeUsage(codeId, client) {
+    const query = `
+        UPDATE discount_codes
+        SET used_count = used_count + 1
+        WHERE code_id = $1
+    `;
+    await execQuery(query, [codeId], client);
+}
+
+module.exports = {
+    // ... (تصدير الدوال السابقة)
+    getCodeById,
+    createCode,
+    getAllCodes,
+    updateCodeStatus,
+    validateCode,
+    incrementCodeUsage,
+    // ...
+};
