@@ -440,3 +440,89 @@ router.get('/api/payment/callback', (req, res) => {
 
 // 4. مسار التحقق من كود التعويض
 router.post('/api/booking/validate-compensation-code', verifyToken, validateCompensationCodeController);
+
+// routes.js (تعديلات)
+
+const express = require('express');
+const router = express.Router();
+const { body, validationResult } = require('express-validator'); // 💡 مكتبة التحقق من المدخلات
+// نفترض أنك استوردت الدوال الأمنية:
+// const { csrfProtection, authLimiter } = require('./server'); 
+// وإذا لم تكن مُصدّرة، قم بتعريفها هنا مرة أخرى مع المكتبات:
+const csrf = require('csurf'); 
+const csrfProtection = csrf({ cookie: true });
+// ... (تعريف authLimiter كما في server.js إذا لم يكن مُصدّر)
+
+// دالة مساعدة لمعالجة أخطاء التحقق
+const handleValidationErrors = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        // يمكنك تنسيق الأخطاء بشكل أفضل هنا
+        return res.status(400).json({ 
+            message: "خطأ في البيانات المدخلة.", 
+            errors: errors.array().map(err => err.msg) 
+        });
+    }
+    next();
+};
+
+// ===================================
+// 🔐 مسارات المصادقة (مع أمان مُعزز)
+// ===================================
+
+// 1. مسار جلب CSRF Token (يُستخدم من الـ Frontend قبل أي طلب POST)
+router.get('/api/csrf-token', csrfProtection, (req, res) => {
+    // الـ CSRF Token يكون في الكوكي (httpOnly) وفي الـ Body/Header كـ X-CSRF-Token
+    res.json({ csrfToken: req.csrfToken() }); 
+});
+
+
+// 2. التسجيل (Signup) - تطبيق Rate Limiting + CSRF + Validation
+router.post('/api/auth/signup', 
+    authLimiter, // 💡 Rate Limiting
+    csrfProtection, // 💡 CSRF Protection
+    [
+        // 💡 التحقق من المدخلات (Input Validation)
+        body('name').trim().notEmpty().withMessage('يجب إدخال الاسم كاملاً.'),
+        body('email').isEmail().normalizeEmail().withMessage('تنسيق البريد الإلكتروني غير صحيح.'),
+        body('password').isLength({ min: 8 }).withMessage('كلمة المرور يجب أن تكون 8 أحرف على الأقل.'),
+        body('phone').isMobilePhone('ar-EG').withMessage('يجب إدخال رقم هاتف مصري صحيح (مثال: 01xxxxxxxxx).'),
+        body('role').isIn(['player', 'employee', 'owner']).withMessage('قيمة الدور غير صالحة.'),
+    ],
+    handleValidationErrors, // معالج الأخطاء
+    signupController // المتحكم الأصلي
+);
+
+
+// 3. تسجيل الدخول (Login) - تطبيق Rate Limiting + CSRF + Validation
+router.post('/api/auth/login', 
+    authLimiter, // 💡 Rate Limiting
+    csrfProtection, 
+    [
+        // 💡 التحقق من المدخلات
+        body('email').isEmail().withMessage('تنسيق البريد الإلكتروني غير صحيح.'),
+        body('password').isLength({ min: 1 }).withMessage('كلمة المرور مطلوبة.'),
+    ],
+    handleValidationErrors, 
+    loginController
+);
+
+
+// ===================================
+// 🛡️ تطبيق CSRF على المسارات الحساسة الأخرى
+// ===================================
+
+// يجب إضافة csrfProtection إلى كل مسار POST, PUT, DELETE في النظام.
+// مثال على مسار إنشاء حجز جديد:
+router.post('/api/booking/create', 
+    verifyToken, 
+    csrfProtection, // 💡 حماية
+    [ 
+        // 💡 مثال للـ Validation
+        body('fieldId').isUUID().withMessage('معرف الملعب غير صحيح.'),
+        body('slotIds').isArray({ min: 1 }).withMessage('يجب اختيار ساعة واحدة على الأقل.'),
+        body('compensationCode').optional().isString().trim(),
+    ],
+    handleValidationErrors,
+    createBookingController
+);
