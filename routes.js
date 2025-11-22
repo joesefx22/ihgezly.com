@@ -593,3 +593,73 @@ router.get('/api/me', verifyToken, profileController);
 router.get('/api/cities', getCitiesController); 
 
 // ... (إضافة جميع المسارات المتبقية بنفس الهيكل)
+
+// routes.js - استيراد المكتبات والمتحكمات موجود في بداية الملف
+const { checkPermissions } = require('./middlewares/auth'); // نفترض وجودها
+const { body } = require('express-validator');
+
+// ... (استيراد المتحكمات الجديدة من controllers.js)
+const { 
+    getAdminDashboardStatsController, 
+    blockSlotController, 
+    submitRatingController, 
+    getSystemLogsController,
+    handleValidationErrors // استيراد الدالة المساعدة
+} = require('./controllers');
+
+// ===================================
+// 📊 مسارات لوحة الأدمن والتقارير
+// ===================================
+
+// جلب إحصائيات لوحة الأدمن
+router.get('/api/admin/dashboard', 
+    verifyToken, 
+    checkPermissions(['admin']), // التأكد من أن المستخدم لديه صلاحية أدمن
+    getAdminDashboardStatsController
+);
+
+// جلب سجل النشاط
+router.get('/api/admin/activity-logs', 
+    verifyToken, 
+    checkPermissions(['admin']), 
+    getSystemLogsController
+);
+
+// ===================================
+// ⏰ مسارات إدارة الساعات (للمالك/المدير)
+// ===================================
+
+// حظر ساعة ملعب معينة
+router.post('/api/owner/slots/block', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner', 'manager']), // التأكد من صلاحية المالك أو المدير
+    [
+        body('stadium_id').isInt().withMessage('معرف الملعب غير صحيح'),
+        body('date').isDate().withMessage('التاريخ غير صحيح'),
+        body('start_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صحيحة'),
+        body('end_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صحيحة'),
+        body('reason').optional().trim().isLength({ max: 255 }).withMessage('السبب طويل جداً')
+    ],
+    handleValidationErrors,
+    blockSlotController
+);
+
+// ===================================
+// ⭐ مسارات التقييمات
+// ===================================
+
+// إرسال تقييم جديد
+router.post('/api/stadiums/:stadiumId/rate', 
+    verifyToken, 
+    csrfProtection, 
+    [
+        body('rating').isInt({ min: 1, max: 5 }).withMessage('التقييم يجب أن يكون بين 1 و 5'),
+        body('comment').optional().trim().isLength({ max: 500 }).withMessage('التعليق طويل جداً')
+    ],
+    handleValidationErrors,
+    submitRatingController
+);
+
+
+// ... (إضافة أي مسارات أخرى متبقية بنفس الهيكل)
