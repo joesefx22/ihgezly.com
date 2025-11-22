@@ -1,21 +1,374 @@
-// routes.js - تجميع المسارات
+// routes.js - تجميع المسارات (Controllers Layer) ونقطة الربط الرئيسية للـ API
 
 const express = require('express');
 const router = express.Router();
-const { body } = require('express-validator');
+const passport = require('passport'); // مطلوب لمسارات Google Auth
+const { body, param, validationResult } = require('express-validator');
 
-// استيراد المكونات الأساسية
-const { csrfProtection } = require('./server'); // من الملف server.js
-const { verifyToken, checkPermissions } = require('./middlewares/auth'); 
-const { uploadSingle } = require('./uploadConfig'); 
-const controllers = require('./controllers'); 
+// استيراد المكونات الأساسية من ملفاتنا المُنظَّمة
+const models = require('./models');
+// استيراد حماية CSRF من server.js
+const { csrfProtection } = require('./server'); 
+// نحتاج إلى multer لرفع الصور (نفترض وجود ملف uploadConfig.js)
+const uploadConfig = require('./uploadConfig'); 
 
+
+/* =======================================================
+ * 🛡️ Middlewares الأمنية والتحقق من الصلاحيات (Auth & Validation)
+ * ======================================================= */
+
+/**
+ * 🛠️ دالة مساعدة لمعالجة أخطاء التحقق (Validation Errors)
+ */
+const handleValidationErrors = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        // إرجاع أخطاء التحقق بتنسيق موحد
+        return res.status(400).json({ 
+            success: false, 
+            message: 'خطأ في بيانات الإدخال',
+            errors: errors.array() 
+        });
+    }
+    next();
+};
+
+/**
+ * 🔐 التحقق من المصادقة (Authentication)
+ * تفترض هذه الدالة أن Passport قد قام بتعيين req.user عبر الجلسة
+ */
+const verifyToken = (req, res, next) => {
+    // مسار جلب الـ CSRF Token يجب أن يكون متاحاً للجميع
+    if (req.path === '/api/csrf-token') return next(); 
+
+    if (req.isAuthenticated() && req.user) { 
+        return next();
+    }
+    // يجب تسجيل الخروج من الجلسة في حال عدم المصادقة
+    req.logout((err) => {
+        if (err) console.error('Error logging out:', err);
+        res.status(401).json({ success: false, message: 'Authorization required. Please log in.' });
+    });
+};
+
+/**
+ * 🔑 التحقق من الصلاحيات (Authorization)
+ */
+const checkPermissions = (roles) => (req, res, next) => {
+    if (req.user && roles.includes(req.user.role)) {
+        return next();
+    }
+    return res.status(403).json({ success: false, message: 'Forbidden: Insufficient permissions.' });
+};
+
+
+/* =======================================================
+ * 👥 المتحكمات (Controllers) - منطق API
+ * ======================================================= */
+
+// --- 1. المصادقة (Auth) ---
+
+const registerController = async (req, res) => {
+    try {
+        const user = await models.registerNewUser(req.body);
+        // لا يتم تسجيل الدخول تلقائيًا، يجب على المستخدم تسجيل الدخول بعد التسجيل
+        res.status(201).json({ success: true, message: 'تم إنشاء المستخدم بنجاح. يرجى تسجيل الدخول.', user: user });
+    } catch (error) {
+        res.status(409).json({ success: false, message: error.message });
+    }
+};
+
+const loginController = (req, res, next) => {
+    // استخدام Passport للمصادقة المحلية (Local Strategy)
+    passport.authenticate('local', (err, user, info) => {
+        if (err) {
+            return res.status(500).json({ success: false, message: 'Internal server error' });
+        }
+        if (!user) {
+            return res.status(401).json({ success: false, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
+        }
+        
+        req.logIn(user, (err) => {
+            if (err) return res.status(500).json({ success: false, message: 'Login failed' });
+            
+            // تحقق إضافي لحالة الموافقة للمالكين
+            if (user.role === 'manager' && user.is_approved === false) {
+                 req.logout(() => {
+                    res.status(403).json({ success: false, message: 'حساب المالك/المدير قيد المراجعة ولم تتم الموافقة عليه بعد.' });
+                 });
+                 return;
+            }
+
+            delete user.password; // ضمان عدم إرسال كلمة المرور
+            res.json({ success: true, message: 'تم تسجيل الدخول بنجاح', user: user });
+        });
+    })(req, res, next);
+};
+
+const logoutController = (req, res) => {
+    req.logout((err) => {
+        if (err) {
+            return res.status(500).json({ success: false, message: 'فشل في تسجيل الخروج' });
+        }
+        // مسح الكوكي والجلسة
+        req.session.destroy(() => {
+            res.clearCookie('connect.sid'); // اسم الكوكي الافتراضي للجلسة
+            res.json({ success: true, message: 'تم تسجيل الخروج بنجاح' });
+        });
+    });
+};
+
+const getCurrentUserController = (req, res) => {
+    // req.user يأتي من Passport بعد verifyToken
+    if (req.user) {
+        // لا نحتاج لكلمة المرور هنا
+        const user = { ...req.user };
+        delete user.password; 
+        res.json(user);
+    } else {
+        res.status(401).json({ success: false, message: 'غير مصادق' });
+    }
+};
+
+// --- 2. الملاعب العامة والحجوزات (Public & Player) ---
+
+const getStadiumsController = async (req, res) => {
+    try {
+        const filters = req.query;
+        const stadiums = await models.getStadiums(filters);
+        res.json(stadiums);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب الملاعب' });
+    }
+};
+
+const getStadiumDetailsController = async (req, res) => {
+    try {
+        const stadium = await models.getStadiumById(req.params.stadiumId);
+        if (!stadium) {
+            return res.status(404).json({ success: false, message: 'الملعب غير موجود' });
+        }
+        const ratings = await models.getStadiumRatings(req.params.stadiumId);
+        res.json({ ...stadium, ratings });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب تفاصيل الملعب' });
+    }
+};
+
+const getAvailableSlotsController = async (req, res) => {
+    try {
+        const { date } = req.query;
+        const { stadiumId } = req.params;
+        if (!date) {
+            return res.status(400).json({ success: false, message: 'التاريخ مطلوب' });
+        }
+        
+        const slots = await models.getAvailableSlots(stadiumId, date);
+        // يمكن إضافة منطق معالجة الساعات هنا لتبسيطها للـ Frontend
+        res.json(slots);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب الساعات المتاحة' });
+    }
+};
+
+const createBookingController = async (req, res) => {
+    try {
+        const bookingData = { ...req.body, user_id: req.user.id };
+        const newBooking = await models.createBooking(bookingData);
+        res.status(201).json({ success: true, message: 'تم إنشاء الحجز بنجاح', booking: newBooking });
+    } catch (error) {
+        // خطأ تضارب الحجز أو كود التعويض غير صحيح
+        if (error.message.includes('conflict') || error.message.includes('code is invalid')) {
+            return res.status(409).json({ success: false, message: error.message });
+        }
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في عملية الحجز' });
+    }
+};
+
+const getUserBookingsController = async (req, res) => {
+    try {
+        const bookings = await models.getUserBookings(req.user.id, req.query.status);
+        res.json(bookings);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب حجوزات المستخدم' });
+    }
+};
+
+const cancelBookingPlayerController = async (req, res) => {
+    try {
+        const booking = await models.cancelBooking(req.params.bookingId, req.user.id);
+        if (!booking) {
+            return res.status(404).json({ success: false, message: 'الحجز غير موجود' });
+        }
+        res.json({ success: true, message: 'تم إلغاء الحجز بنجاح وإصدار كود تعويض بقيمة العربون.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في إلغاء الحجز' });
+    }
+};
+
+
+// --- 3. إدارة الملاعب (Owner / Manager) ---
+
+const getOwnerStadiumsController = async (req, res) => {
+    try {
+        const stadiums = await models.getOwnerStadiums(req.user.id);
+        res.json(stadiums);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب ملاعب المالك' });
+    }
+};
+
+const createStadiumController = async (req, res) => {
+    try {
+        // Multer يضيف req.file (صورة الملعب)
+        const image_url = req.file ? `/uploads/images/${req.file.filename}` : null;
+        const newStadium = await models.createStadium({ ...req.body, image_url }, req.user.id);
+        res.status(201).json({ success: true, message: 'تم إنشاء الملعب بنجاح', stadium: newStadium });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في إنشاء الملعب' });
+    }
+};
+
+const updateStadiumController = async (req, res) => {
+    try {
+        const stadium_id = req.params.stadiumId;
+        const updateData = req.body;
+        
+        if (req.file) {
+            updateData.image_url = `/uploads/images/${req.file.filename}`;
+        }
+        
+        const updatedStadium = await models.updateStadium(stadium_id, updateData, req.user.id);
+        if (!updatedStadium) {
+            return res.status(404).json({ success: false, message: 'الملعب غير موجود' });
+        }
+        res.json({ success: true, message: 'تم تحديث الملعب بنجاح', stadium: updatedStadium });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في تحديث الملعب' });
+    }
+};
+
+const getStadiumBookingsOwnerController = async (req, res) => {
+    try {
+        const { stadiumId } = req.params;
+        // يجب إضافة تحقق من أن الملعب يخص req.user.id هنا قبل الجلب
+        const bookings = await models.getStadiumBookings(stadiumId, req.query.date, req.query.status);
+        res.json(bookings);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب حجوزات الملعب' });
+    }
+};
+
+const confirmBookingOwnerController = async (req, res) => {
+    try {
+        const booking = await models.confirmBooking(req.params.bookingId, req.user.id);
+        if (!booking) {
+            return res.status(404).json({ success: false, message: 'الحجز غير موجود أو مؤكد بالفعل' });
+        }
+        res.json({ success: true, message: 'تم تأكيد الحجز' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في تأكيد الحجز' });
+    }
+};
+
+const cancelBookingOwnerController = async (req, res) => {
+    try {
+        const booking = await models.cancelBooking(req.params.bookingId, req.user.id);
+        if (!booking) {
+            return res.status(404).json({ success: false, message: 'الحجز غير موجود أو ملغى بالفعل' });
+        }
+        res.json({ success: true, message: 'تم إلغاء الحجز' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في إلغاء الحجز' });
+    }
+};
+
+const blockSlotController = async (req, res) => {
+    try {
+        const { stadium_id, date, start_time, end_time, reason } = req.body;
+        // يجب إضافة تحقق من أن الملعب يخص req.user.id هنا
+        const newBlock = await models.blockTimeSlot(stadium_id, date, start_time, end_time, reason, req.user.id);
+        res.status(201).json({ success: true, message: 'تم حظر الفترة الزمنية بنجاح', block: newBlock });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في حظر الفترة الزمنية' });
+    }
+};
+
+// --- 4. لوحة الأدمن (Admin) ---
+
+const getAdminDashboardStatsController = async (req, res) => {
+    try {
+        const stats = await models.getDashboardStats();
+        res.json(stats);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب إحصائيات لوحة التحكم' });
+    }
+};
+
+const getSystemLogsController = async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 15;
+        const logs = await models.getSystemActivityLogs(limit);
+        res.json(logs);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب سجل النشاط' });
+    }
+};
+
+const getPendingManagersController = async (req, res) => {
+    try {
+        const managers = await models.getPendingManagers();
+        res.json(managers);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في جلب طلبات المديرين المعلقة' });
+    }
+};
+
+const approveManagerController = async (req, res) => {
+    try {
+        const user = await models.approveManager(req.params.userId, req.user.id);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+        }
+        res.json({ success: true, message: `تم الموافقة على ${user.name} كمالك ملعب.` });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'فشل في الموافقة على المدير' });
+    }
+};
+
+
+/* =======================================================
+ * 🗺️ تعريف المسارات (Route Definitions)
+ * ======================================================= */
 
 // ===================================
-// 👥 مسارات المصادقة (Auth Routes)
+// 1. مسارات المصادقة العامة (Auth)
 // ===================================
 
-// مسار التسجيل
+// مسار جلب الـ CSRF Token (مطلوب لـ Frontend)
+router.get('/api/csrf-token', csrfProtection, (req, res) => {
+    // تم تعريف هذه الدالة في server.js وتصديرها
+    res.json({ csrfToken: req.csrfToken() }); 
+});
+
+// مسار التسجيل (Signup)
 router.post('/api/signup',
     csrfProtection,
     [
@@ -24,725 +377,170 @@ router.post('/api/signup',
         body('password').isLength({ min: 6 }).withMessage('يجب أن تكون كلمة المرور 6 أحرف على الأقل'),
         body('role').isIn(['player', 'owner', 'manager']).withMessage('دور المستخدم غير صالح')
     ],
-    controllers.handleValidationErrors,
-    controllers.registerController
+    handleValidationErrors,
+    registerController
 );
 
-// مسار تسجيل الدخول
+// مسار تسجيل الدخول (Login)
 router.post('/api/login', 
     csrfProtection,
-    controllers.loginController // يفترض أن يستخدم passport.authenticate
+    [
+        body('email').isEmail().withMessage('بريد إلكتروني غير صحيح'),
+        body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
+    ],
+    handleValidationErrors,
+    loginController
 );
 
-// مسار تسجيل الدخول عبر Google
+// مسار جلب معلومات المستخدم الحالي (مطلوب لكل لوحات التحكم)
+router.get('/api/me', verifyToken, getCurrentUserController);
+
+// مسار تسجيل الخروج (Logout)
+router.post('/api/logout', verifyToken, csrfProtection, logoutController);
+
+// مسارات تسجيل الدخول عبر Google (تستخدم Passport.js)
 router.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 router.get('/auth/google/callback', 
     passport.authenticate('google', { failureRedirect: '/login.html' }),
     (req, res) => {
-        res.redirect('/'); // إعادة توجيه المستخدم بعد نجاح تسجيل الدخول
+        // إعادة التوجيه إلى الصفحة الرئيسية أو لوحة التحكم المناسبة
+        res.redirect('/owner.html'); 
     }
 );
 
-// مسار جلب الملف الشخصي (للتأكد من تسجيل الدخول)
-router.get('/api/me', verifyToken, controllers.profileController);
-
 // ===================================
-// 🏟️ مسارات إدارة الملاعب (Admin/Owner)
+// 2. مسارات الملاعب والحجز (Public & Player)
 // ===================================
 
-// إنشاء ملعب جديد (يتطلب صلاحية owner أو admin)
-router.post('/api/admin/stadiums/create', 
+// جلب جميع الملاعب (يمكن استخدام الاستعلامات لتصفيتها)
+router.get('/api/stadiums', getStadiumsController);
+
+// جلب تفاصيل ملعب واحد + تقييماته
+router.get('/api/stadiums/:stadiumId', getStadiumDetailsController);
+
+// جلب الساعات المتاحة والمحجوزة لملعب في تاريخ معين
+router.get('/api/stadiums/:stadiumId/slots', 
+    [param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')],
+    handleValidationErrors,
+    getAvailableSlotsController
+);
+
+// إنشاء حجز جديد
+router.post('/api/bookings', 
     verifyToken, 
-    csrfProtection, 
-    checkPermissions(['admin', 'owner']), 
-    uploadSingle('pitch_image'), // Multer يتعامل مع رفع الصورة
+    csrfProtection,
     [
-        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
-        body('price_per_hour').isNumeric().toFloat().isFloat({ min: 10 }).withMessage('السعر غير صالح'),
-    ],
-    controllers.handleValidationErrors,
-    controllers.createStadiumController
-);
-
-// مسارات جلب الملاعب الخاصة بالمالك
-router.get('/api/owner/stadiums', 
-    verifyToken, 
-    checkPermissions(['admin', 'owner', 'manager']),
-    controllers.getOwnerStadiumsController // يجب إضافة هذا المتحكم في controllers.js
-);
-
-// ===================================
-// 📅 مسارات الحجز والدفع
-// ===================================
-
-router.post('/api/bookings/create', 
-    verifyToken, 
-    csrfProtection, 
-    // ... (Validation)
-    controllers.createBookingController 
-);
-
-router.post('/api/payment/confirm', 
-    verifyToken, 
-    csrfProtection, 
-    controllers.confirmPaymentController 
-);
-
-// ===================================
-// 📊 مسارات الإدارة والتقارير
-// ===================================
-
-router.get('/api/admin/dashboard', 
-    verifyToken, 
-    checkPermissions(['admin']), 
-    controllers.getAdminDashboardStatsController
-);
-
-router.get('/api/admin/activity-logs', 
-    verifyToken, 
-    checkPermissions(['admin']), 
-    controllers.getSystemLogsController
-);
-
-// ===================================
-// 🛑 مسارات الساعات المحظورة والتقييمات
-// ===================================
-
-router.post('/api/owner/slots/block', 
-    verifyToken, 
-    csrfProtection, 
-    checkPermissions(['owner', 'manager']), 
-    // ... (Validation)
-    controllers.blockSlotController
-);
-
-router.post('/api/stadiums/:stadiumId/rate', 
-    verifyToken, 
-    csrfProtection, 
-    // ... (Validation)
-    controllers.submitRatingController
-);
-
-
-module.exports = router;
-
-// routes.js
-const express = require('express');
-const router = express.Router();
-const { login, signup } = require('./controllers');
-const { verifyToken, checkRole } = require('./middleware');
-
-// مسارات Authentication (غير محمية)
-router.post('/auth/login', login);
-router.post('/auth/signup', signup);
-
-// مثال على مسار محمي (سيكون أساس عملك لاحقاً)
-router.get('/user/profile', verifyToken, checkRole(['player', 'employee', 'owner', 'admin']), (req, res) => {
-    // إذا وصل الطلب إلى هنا، فالمستخدم مسجل دخول وله دور صالح
-    res.json({ message: "تم الوصول بنجاح لملفك الشخصي.", user: req.user });
-});
-
-module.exports = router;
-
-// routes.js (تأكيد المسارات وحمايتها)
-// ... (الـ Imports الحالية) ...
-const { login, signup, getProfile, getMyBookings, updateProfile, getPlayerRequests } = require('./controllers');
-const { verifyToken, checkRole } = require('./middleware');
-
-// ... (مسارات Authentication الحالية) ...
-
-// مسارات اللاعبين المحمية
-router.get('/user/profile', verifyToken, checkRole(['player', 'employee', 'owner', 'admin']), getProfile);
-router.put('/user/profile', verifyToken, checkRole(['player']), updateProfile); // تحديث الملف الشخصي للاعب فقط
-
-router.get('/player/bookings', verifyToken, checkRole(['player']), getMyBookings);
-router.get('/player/requests', verifyToken, checkRole(['player']), getPlayerRequests); 
-
-// 🚨 يجب إضافة مسار POST /booking/create لاحقاً
-// router.post('/booking/create', verifyToken, checkRole(['player']), createBooking); 
-
-module.exports = router;
-
-// routes.js (إضافة المسارات التالية)
-
-// ... (تأكد من استيراد الدوال الجديدة من controllers) ...
-
-// -------------------------------------
-// مسارات الحجز (Booking) - محمية بالـ player role
-// -------------------------------------
-
-// 1. جلب الملاعب المتاحة
-router.get('/api/fields/available', verifyToken, checkRole(['player']), getAvailableFieldsController);
-
-// 2. جلب الساعات المتاحة
-router.get('/api/fields/slots', verifyToken, checkRole(['player']), getAvailableSlotsController);
-
-// 3. إنشاء حجز جديد (المعاملة الحاسمة)
-router.post('/api/booking/create', verifyToken, checkRole(['player']), createBookingController);
-
-// 4. جلب تفاصيل الحجز للدفع (لصفحة payment.html)
-router.get('/api/booking/:bookingId/details', verifyToken, checkRole(['player']), getBookingDetailsController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافة المسار التالي)
-// ... (تأكد من استيراد الدالة الجديدة من controllers) ...
-const { confirmPaymentController } = require('./controllers');
-
-// مسار تأكيد الدفع النهائي بعد النجاح من بوابة الدفع
-router.post('/api/booking/confirm-payment', verifyToken, checkRole(['player']), confirmPaymentController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافة مسار الـ Webhook)
-
-// ... (تأكد من استيراد الدالة الجديدة من controllers) ...
-const { paymobWebhookController } = require('./controllers');
-
-// ... (مساراتك الحالية) ...
-
-// -------------------------------------
-// مسار Paymob Webhook الآمن (لا يحتاج حماية بالتوكن)
-// -------------------------------------
-// هذا المسار يجب تسجيله في إعدادات Paymob Webhook
-router.get('/api/payment/paymob-webhook', paymobWebhookController); 
-// ملاحظة: Paymob يفضل استخدام GET للـ Webhook الذي يرسل البيانات في الـ Query String
-// يمكنك أيضاً إضافة POST إذا كان Webhook مُعداً لإرسال بيانات JSON في الـ Body
-router.post('/api/payment/paymob-webhook', paymobWebhookController); 
-
-module.exports = router;
-
-// routes.js (إضافات لمسارات الموظف)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    getEmployeeFieldsController, 
-    getTodayBookingsController,
-    checkInController,
-    confirmCashController 
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات الموظف (Employee) - محمية بالـ employee role
-// -------------------------------------
-
-// 1. جلب الملاعب المعينة
-router.get('/api/employee/fields', verifyToken, checkRole(['employee']), getEmployeeFieldsController);
-
-// 2. جلب الحجوزات اليومية لملعب
-router.get('/api/employee/bookings', verifyToken, checkRole(['employee']), getTodayBookingsController);
-
-// 3. تسجيل الحضور (Check-in)
-router.post('/api/employee/booking/checkin', verifyToken, checkRole(['employee']), checkInController);
-
-// 4. تأكيد الدفع النقدي للحجوزات قصيرة الأجل (أقل من 24 ساعة)
-router.post('/api/employee/booking/confirm-cash', verifyToken, checkRole(['employee']), confirmCashController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافات لمسارات المالك)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    getOwnerDashboardController,
-    getOwnerStadiumsController,
-    getOwnerBookingsController,
-    confirmOwnerBookingController,
-    cancelOwnerBookingController
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات مالك الملعب (Owner) - محمية بالـ owner role
-// -------------------------------------
-
-// 1. جلب إحصائيات لوحة التحكم
-router.get('/api/owner/dashboard', verifyToken, checkRole(['owner']), getOwnerDashboardController);
-
-// 2. جلب الملاعب التابعة للمالك
-router.get('/api/owner/stadiums', verifyToken, checkRole(['owner']), getOwnerStadiumsController);
-
-// 3. جلب حجوزات المالك (مع فلاتر)
-router.get('/api/owner/bookings', verifyToken, checkRole(['owner']), getOwnerBookingsController);
-
-// 4. تأكيد حجز نقدي (للحجوزات المعلقة)
-router.post('/api/owner/bookings/:bookingId/confirm', verifyToken, checkRole(['owner']), confirmOwnerBookingController);
-
-// 5. إلغاء حجز (يستخدم أيضاً كـ لم يحضر)
-router.post('/api/owner/bookings/:bookingId/cancel', verifyToken, checkRole(['owner']), cancelOwnerBookingController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافات لمسارات الأدمن)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    getAdminDashboardController,
-    getAllUsersController,
-    getAllStadiumsController,
-    getPendingManagersController,
-    approveUserController,
-    rejectUserController,
-    getActivityLogsController,
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات الأدمن (Admin) - محمية بالـ admin role
-// -------------------------------------
-
-// 1. جلب إحصائيات لوحة التحكم
-router.get('/api/admin/dashboard', verifyToken, checkRole(['admin']), getAdminDashboardController);
-
-// 2. إدارة المستخدمين: جلب الكل
-router.get('/api/admin/users', verifyToken, checkRole(['admin']), getAllUsersController);
-
-// 3. إدارة الملاعب: جلب الكل
-router.get('/api/admin/stadiums', verifyToken, checkRole(['admin']), getAllStadiumsController);
-
-// 4. إدارة الموافقات: جلب الطلبات المعلقة
-router.get('/api/admin/pending-managers', verifyToken, checkRole(['admin']), getPendingManagersController);
-
-// 5. إدارة الموافقات: الموافقة على مستخدم
-router.post('/api/admin/users/:userId/approve', verifyToken, checkRole(['admin']), approveUserController);
-
-// 6. إدارة الموافقات: رفض (أو تعطيل) مستخدم
-router.post('/api/admin/users/:userId/reject', verifyToken, checkRole(['admin']), rejectUserController);
-
-// 7. سجل النشاط
-router.get('/api/admin/activity-logs', verifyToken, checkRole(['admin']), getActivityLogsController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافات لمسارات CRUD الملاعب)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    createFieldController,
-    updateFieldController,
-    deleteFieldController,
-    activateFieldController,
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات الملاعب (Fields CRUD)
-// -------------------------------------
-
-// 1. إنشاء ملعب جديد (للأدمن أو المالك)
-router.post('/api/fields', verifyToken, checkRole(['admin', 'owner']), createFieldController);
-
-// 2. تحديث ملعب (للأدمن أو مالك الملعب المحدد)
-router.put('/api/fields/:fieldId', verifyToken, checkRole(['admin', 'owner']), updateFieldController);
-
-// 3. تعطيل/حذف ملعب (للأدمن أو مالك الملعب المحدد)
-router.delete('/api/fields/:fieldId', verifyToken, checkRole(['admin', 'owner']), deleteFieldController);
-
-// 4. تفعيل ملعب (للأدمن أو مالك الملعب المحدد)
-router.post('/api/fields/:fieldId/activate', verifyToken, checkRole(['admin', 'owner']), activateFieldController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافات لمسارات الحجز والدفع)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    bookingRequestController,
-    getBookingInfoController,
-    initiatePaymentController,
-    paymentCallbackController,
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات الحجز (Booking) - للاعبين فقط
-// -------------------------------------
-
-// 1. طلب حجز ساعة (يقرر ما إذا كان مطلوب دفع عربون أم لا)
-router.post('/api/booking/request', verifyToken, checkRole(['player']), bookingRequestController);
-
-// 2. جلب معلومات الحجز للدفع
-router.get('/api/booking/:bookingId/info', verifyToken, checkRole(['player']), getBookingInfoController);
-
-// 3. بدء عملية الدفع (الحصول على رابط PayMob)
-router.post('/api/booking/:bookingId/pay', verifyToken, checkRole(['player']), initiatePaymentController);
-
-// -------------------------------------
-// مسارات إشعارات الدفع (Callback/Webhook) - بدون حماية Token
-// -------------------------------------
-
-// 4. معالجة إشعار الدفع من PayMob
-router.get('/api/payment/callback', paymentCallbackController); 
-// Note: يُفضل استخدام POST في الإنتاج، لكن GET أسهل للمحاكاة عبر التوجيه.
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافات لمسارات إدارة الأكواد والتحقق)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    // ... (الدوال السابقة)
-    createCodeController,
-    getAllCodesController,
-    toggleCodeStatusController,
-    validateCodeController, // الجديدة
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات إدارة الأكواد (Codes) - للأدمن فقط
-// -------------------------------------
-
-// 1. إنشاء كود جديد
-router.post('/api/admin/codes', verifyToken, checkRole(['admin']), createCodeController);
-
-// 2. جلب جميع الأكواد
-router.get('/api/admin/codes', verifyToken, checkRole(['admin']), getAllCodesController);
-
-// 3. تعطيل/تفعيل كود
-router.put('/api/admin/codes/:codeId/status', verifyToken, checkRole(['admin']), toggleCodeStatusController);
-
-// -------------------------------------
-// مسارات استخدام الأكواد (Player Flow)
-// -------------------------------------
-
-// 4. التحقق من صحة الكود قبل الحجز
-router.post('/api/codes/validate', verifyToken, checkRole(['player']), validateCodeController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js (إضافات لمسارات طلبات اللاعبين والتقييمات)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    // ... (الدوال السابقة)
-    createPlayerRequestController,
-    getAllPlayerRequestsController,
-    togglePlayerRequestController,
-    submitRatingController,
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات طلبات اللاعبين (Player Requests)
-// -------------------------------------
-
-// 1. إنشاء طلب جديد (صاحب الحجز)
-router.post('/api/player-requests', verifyToken, checkRole(['player']), createPlayerRequestController);
-
-// 2. جلب جميع الطلبات النشطة (لصفحة players.html)
-router.get('/api/player-requests', verifyToken, checkRole(['player']), getAllPlayerRequestsController);
-
-// 3. انضمام/مغادرة لطلب
-router.post('/api/player-requests/:requestId/:action', verifyToken, checkRole(['player']), togglePlayerRequestController); 
-// :action هنا يمكن أن تكون 'join' أو 'leave'
-
-// -------------------------------------
-// مسارات التقييمات (Ratings)
-// -------------------------------------
-
-// 4. إرسال تقييم لحجز مكتمل (بعد اللعب)
-router.post('/api/bookings/:bookingId/rate', verifyToken, checkRole(['player']), submitRatingController);
-
-// ... (بقية ملف routes.js)
-
-// routes.js
-
-// ...
-
-// 7. جلب تقييمات ملعب معين (لعرضها في واجهة الملعب)
-router.get('/api/fields/:fieldId/ratings', getFieldRatingsController); 
-
-// ...
-
-// routes.js (إضافات لمسارات الإشعارات)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    // ... (الدوال السابقة)
-    getNotificationsController,
-    markAllAsReadController,
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات الإشعارات (Notifications)
-// -------------------------------------
-
-// 1. جلب الإشعارات وعدد غير المقروء
-router.get('/api/notifications', verifyToken, getNotificationsController);
-
-// 2. وضع علامة 'مقروء' على الكل
-router.post('/api/notifications/mark-all-read', verifyToken, markAllAsReadController);
-
-// routes.js (إضافات لمسارات المالك/الموظف)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-const { 
-    // ... (الدوال السابقة)
-    loadOwnerStadiumsController,
-    loadOwnerBookingsController,
-    confirmBookingController,
-    cancelBookingController,
-    loadOwnerStatsController,
-    // ...
-} = require('./controllers');
-
-// -------------------------------------
-// مسارات صاحب الملعب (Owner/Employee)
-// -------------------------------------
-
-const OWNER_ROLES = ['owner', 'employee'];
-
-// 1. جلب إحصائيات لوحة التحكم
-router.get('/api/owner/dashboard/stats', verifyToken, checkRole(OWNER_ROLES), loadOwnerStatsController);
-
-// 2. جلب الملاعب التي يديرها
-router.get('/api/owner/stadiums', verifyToken, checkRole(OWNER_ROLES), loadOwnerStadiumsController);
-
-// 3. جلب حجوزات الملاعب التي يديرها
-router.get('/api/owner/bookings', verifyToken, checkRole(OWNER_ROLES), loadOwnerBookingsController);
-
-// 4. تأكيد حجز (بدون عربون)
-router.post('/api/owner/bookings/:bookingId/confirm', verifyToken, checkRole(OWNER_ROLES), confirmBookingController);
-
-// 5. إلغاء حجز
-router.post('/api/owner/bookings/:bookingId/cancel', verifyToken, checkRole(OWNER_ROLES), cancelBookingController);
-
-// routes.js (إضافات لمسارات الأدمن)
-
-// ... (تأكد من استيراد الدوال الجديدة) ...
-
-// -------------------------------------
-// مسارات الأدمن (Admin)
-// -------------------------------------
-
-const ADMIN_ROLES = ['admin'];
-
-// 1. الإحصائيات العامة
-router.get('/api/admin/dashboard/stats', verifyToken, checkRole(ADMIN_ROLES), loadAdminDashboardStatsController);
-
-
-// 2. إدارة الملاعب (CRUD)
-router.post('/api/admin/stadiums', verifyToken, checkRole(ADMIN_ROLES), createStadiumController); // إنشاء
-router.put('/api/admin/stadiums/:fieldId', verifyToken, checkRole(ADMIN_ROLES), updateStadiumController); // تحديث
-router.delete('/api/admin/stadiums/:fieldId', verifyToken, checkRole(ADMIN_ROLES), deleteStadiumController); // حذف
-
-// 3. إدارة المستخدمين (Users)
-router.get('/api/admin/users', verifyToken, checkRole(ADMIN_ROLES), loadAllUsersController);
-router.put('/api/admin/users/:userId/role', verifyToken, checkRole(ADMIN_ROLES), updateUserRoleController); // تحديث الدور
-
-// 4. إدارة المديرين بانتظار الموافقة (Pending Managers)
-router.get('/api/admin/users/pending', verifyToken, checkRole(ADMIN_ROLES), loadPendingManagersController);
-router.post('/api/admin/users/:userId/approve', verifyToken, checkRole(ADMIN_ROLES), approveManagerController);
-router.post('/api/admin/users/:userId/reject', verifyToken, checkRole(ADMIN_ROLES), rejectManagerController);
-
-// 5. إدارة الأكواد (Codes)
-router.post('/api/admin/codes', verifyToken, checkRole(ADMIN_ROLES), createCodeController);
-
-// routes.js (مسارات الدفع)
-
-// ... (استيراد الدوال)
-
-// -------------------------------------
-// مسارات الدفع (Paymob)
-// -------------------------------------
-
-// 1. بدء عملية الدفع (يستدعى من الواجهة الأمامية)
-router.post('/api/payment/initiate', verifyToken, initiatePaymentController);
-
-// 2. مسار الـ Webhook (يستدعى من Paymob - لا يحتاج توكن)
-router.post('/api/payment/webhook', paymobWebhookController); 
-
-// 3. مسار الـ Callback (لإعادة توجيه المستخدم بعد الدفع)
-router.get('/api/payment/callback', (req, res) => {
-    // Paymob ستعيد توجيه المستخدم إلى هذا المسار
-    const success = req.query.success === 'true';
-    const bookingId = req.query.merchant_order_id; 
-    const message = success ? 'success=true' : 'success=false';
-    
-    // التوجيه لصفحة ملف المستخدم لعرض حالة الحجز
-    res.redirect(`/profile.html?status=${message}&bookingId=${bookingId}`);
-});
-
-// routes.js (قسم مسارات اللاعب/الحجز)
-
-// 4. مسار التحقق من كود التعويض
-router.post('/api/booking/validate-compensation-code', verifyToken, validateCompensationCodeController);
-
-// routes.js (تعديلات)
-
-const express = require('express');
-const router = express.Router();
-const { body, validationResult } = require('express-validator'); // 💡 مكتبة التحقق من المدخلات
-// نفترض أنك استوردت الدوال الأمنية:
-// const { csrfProtection, authLimiter } = require('./server'); 
-// وإذا لم تكن مُصدّرة، قم بتعريفها هنا مرة أخرى مع المكتبات:
-const csrf = require('csurf'); 
-const csrfProtection = csrf({ cookie: true });
-// ... (تعريف authLimiter كما في server.js إذا لم يكن مُصدّر)
-
-// دالة مساعدة لمعالجة أخطاء التحقق
-const handleValidationErrors = (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        // يمكنك تنسيق الأخطاء بشكل أفضل هنا
-        return res.status(400).json({ 
-            message: "خطأ في البيانات المدخلة.", 
-            errors: errors.array().map(err => err.msg) 
-        });
-    }
-    next();
-};
-
-// ===================================
-// 🔐 مسارات المصادقة (مع أمان مُعزز)
-// ===================================
-
-// 1. مسار جلب CSRF Token (يُستخدم من الـ Frontend قبل أي طلب POST)
-router.get('/api/csrf-token', csrfProtection, (req, res) => {
-    // الـ CSRF Token يكون في الكوكي (httpOnly) وفي الـ Body/Header كـ X-CSRF-Token
-    res.json({ csrfToken: req.csrfToken() }); 
-});
-
-
-// 2. التسجيل (Signup) - تطبيق Rate Limiting + CSRF + Validation
-router.post('/api/auth/signup', 
-    authLimiter, // 💡 Rate Limiting
-    csrfProtection, // 💡 CSRF Protection
-    [
-        // 💡 التحقق من المدخلات (Input Validation)
-        body('name').trim().notEmpty().withMessage('يجب إدخال الاسم كاملاً.'),
-        body('email').isEmail().normalizeEmail().withMessage('تنسيق البريد الإلكتروني غير صحيح.'),
-        body('password').isLength({ min: 8 }).withMessage('كلمة المرور يجب أن تكون 8 أحرف على الأقل.'),
-        body('phone').isMobilePhone('ar-EG').withMessage('يجب إدخال رقم هاتف مصري صحيح (مثال: 01xxxxxxxxx).'),
-        body('role').isIn(['player', 'employee', 'owner']).withMessage('قيمة الدور غير صالحة.'),
-    ],
-    handleValidationErrors, // معالج الأخطاء
-    signupController // المتحكم الأصلي
-);
-
-
-// 3. تسجيل الدخول (Login) - تطبيق Rate Limiting + CSRF + Validation
-router.post('/api/auth/login', 
-    authLimiter, // 💡 Rate Limiting
-    csrfProtection, 
-    [
-        // 💡 التحقق من المدخلات
-        body('email').isEmail().withMessage('تنسيق البريد الإلكتروني غير صحيح.'),
-        body('password').isLength({ min: 1 }).withMessage('كلمة المرور مطلوبة.'),
-    ],
-    handleValidationErrors, 
-    loginController
-);
-
-
-// ===================================
-// 🛡️ تطبيق CSRF على المسارات الحساسة الأخرى
-// ===================================
-
-// يجب إضافة csrfProtection إلى كل مسار POST, PUT, DELETE في النظام.
-// مثال على مسار إنشاء حجز جديد:
-router.post('/api/booking/create', 
-    verifyToken, 
-    csrfProtection, // 💡 حماية
-    [ 
-        // 💡 مثال للـ Validation
-        body('fieldId').isUUID().withMessage('معرف الملعب غير صحيح.'),
-        body('slotIds').isArray({ min: 1 }).withMessage('يجب اختيار ساعة واحدة على الأقل.'),
-        body('compensationCode').optional().isString().trim(),
+        body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('date').isDate().withMessage('التاريخ غير صحيح'),
+        body('total_price').isFloat({ min: 0 }).withMessage('السعر الكلي غير صحيح'),
+        // يمكن إضافة المزيد من التحقق...
     ],
     handleValidationErrors,
     createBookingController
 );
 
-// routes.js (في الجزء العلوي)
-const { uploadSingle } = require('./uploadConfig');
-// ...
+// جلب حجوزات المستخدم الحالي
+router.get('/api/me/bookings', verifyToken, getUserBookingsController);
 
-// 💡 مثال: مسار إنشاء ملعب جديد
-router.post('/api/admin/stadiums', 
+// إلغاء حجز (للاعب)
+router.post('/api/me/bookings/:bookingId/cancel', 
     verifyToken, 
     csrfProtection, 
-    uploadSingle, // 💡 هذا الـ middleware سيتعامل مع الرفع
-    [
-        // التحقق من المدخلات الأخرى
-        body('name').notEmpty().withMessage('اسم الملعب مطلوب'),
-        // ...
-    ],
+    [param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')],
     handleValidationErrors,
-    createStadiumController // هذا المتحكم يجب أن يكون جاهزاً لاستقبال req.file
+    cancelBookingPlayerController
 );
-
-// routes.js - (في الجزء العلوي)
-const { body, validationResult } = require('express-validator');
-const { csrfProtection } = require('./server'); // أو أي مكان تم تصديرها منه
-const { verifyToken } = require('./middlewares/auth'); // استخراج الـ Middleware الخاص بك
-const { uploadSingle } = require('./uploadConfig'); // استيراد Multer
-
-// ... (استيراد جميع المتحكمات المفقودة مثل profileController, createStadiumController)
-// const { createStadiumController, updateProfileController, ... } = require('./controllers');
-
-
-// 💡 مسار إنشاء ملعب جديد (مثال على استخدام Multer و Validation)
-router.post('/api/admin/stadiums/create',
-    verifyToken, // التحقق من المصادقة
-    csrfProtection, // حماية CSRF
-    uploadSingle('pitch_image'), // Multer لرفع صورة الملعب
-    [
-        // التحقق من المدخلات
-        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
-        body('location').trim().notEmpty().withMessage('الموقع مطلوب'),
-        body('price_per_hour').isNumeric().toFloat().isFloat({ min: 10 }).withMessage('السعر غير صالح'),
-    ],
-    handleValidationErrors, // يجب أن تكون هذه الدالة مستخرجة أيضاً من server.js القديم أو معرّفة هنا
-    createStadiumController // المتحكم الأصلي
-);
-
-// 💡 مسار تحديث الملف الشخصي
-router.put('/api/profile/update',
-    verifyToken, 
-    csrfProtection, 
-    [
-        // التحقق من المدخلات (تأكد من استخراج هذا المنطق)
-        body('name').optional().trim().notEmpty().withMessage('الاسم مطلوب'),
-        body('phone').optional().isMobilePhone('ar-EG').withMessage('رقم الهاتف غير صالح'),
-    ],
-    handleValidationErrors, 
-    updateProfileController
-);
-
-
-// 💡 مسار جلب الملف الشخصي (GET)
-router.get('/api/me', verifyToken, profileController);
-
-
-// 💡 مسار جلب قائمة المدن أو المناطق (GET)
-// إذا كان هذا المسار موجوداً في server.js القديم
-router.get('/api/cities', getCitiesController); 
-
-// ... (إضافة جميع المسارات المتبقية بنفس الهيكل)
-
-// routes.js - استيراد المكتبات والمتحكمات موجود في بداية الملف
-const { checkPermissions } = require('./middlewares/auth'); // نفترض وجودها
-const { body } = require('express-validator');
-
-// ... (استيراد المتحكمات الجديدة من controllers.js)
-const { 
-    getAdminDashboardStatsController, 
-    blockSlotController, 
-    submitRatingController, 
-    getSystemLogsController,
-    handleValidationErrors // استيراد الدالة المساعدة
-} = require('./controllers');
 
 // ===================================
-// 📊 مسارات لوحة الأدمن والتقارير
+// 3. مسارات المالك/المدير (Owner / Manager)
+// ===================================
+
+// جلب ملاعب المالك
+router.get('/api/owner/stadiums', 
+    verifyToken, 
+    checkPermissions(['owner', 'manager']), 
+    getOwnerStadiumsController
+);
+
+// إضافة ملعب جديد
+router.post('/api/owner/stadiums', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner']), 
+    // استخدام Multer لتحميل صورة واحدة
+    uploadConfig.uploadSingle('image'), 
+    [
+        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
+        body('price_per_hour').isFloat({ min: 10 }).withMessage('سعر الساعة غير صحيح'),
+        body('location').notEmpty().withMessage('الموقع مطلوب')
+    ],
+    handleValidationErrors,
+    createStadiumController
+);
+
+// تعديل ملعب موجود
+router.put('/api/owner/stadiums/:stadiumId', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner']),
+    uploadConfig.uploadSingle('image'), 
+    [param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')],
+    handleValidationErrors,
+    updateStadiumController
+);
+
+// جلب حجوزات ملعب معين (للمالك)
+router.get('/api/owner/stadiums/:stadiumId/bookings', 
+    verifyToken, 
+    checkPermissions(['owner', 'manager']), 
+    [param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')],
+    handleValidationErrors,
+    getStadiumBookingsOwnerController
+);
+
+// تأكيد حجز
+router.post('/api/owner/bookings/:bookingId/confirm', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner', 'manager']), 
+    [param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')],
+    handleValidationErrors,
+    confirmBookingOwnerController
+);
+
+// إلغاء حجز (للمالك)
+router.post('/api/owner/bookings/:bookingId/cancel', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner', 'manager']), 
+    [param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')],
+    handleValidationErrors,
+    cancelBookingOwnerController
+);
+
+// حظر ساعة ملعب معينة
+router.post('/api/owner/slots/block', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner', 'manager']),
+    [
+        body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('date').isDate().withMessage('التاريخ غير صحيح'),
+        body('start_time').matches(/^(\d{2}):(\d{2})$/).withMessage('صيغة وقت البدء غير صحيحة'),
+        body('end_time').matches(/^(\d{2}):(\d{2})$/).withMessage('صيغة وقت الانتهاء غير صحيحة'),
+    ],
+    handleValidationErrors,
+    blockSlotController
+);
+
+// ===================================
+// 4. مسارات لوحة الأدمن (Admin)
 // ===================================
 
 // جلب إحصائيات لوحة الأدمن
 router.get('/api/admin/dashboard', 
     verifyToken, 
-    checkPermissions(['admin']), // التأكد من أن المستخدم لديه صلاحية أدمن
+    checkPermissions(['admin']), 
     getAdminDashboardStatsController
 );
 
@@ -753,41 +551,27 @@ router.get('/api/admin/activity-logs',
     getSystemLogsController
 );
 
-// ===================================
-// ⏰ مسارات إدارة الساعات (للمالك/المدير)
-// ===================================
-
-// حظر ساعة ملعب معينة
-router.post('/api/owner/slots/block', 
+// جلب طلبات المديرين المعلقة
+router.get('/api/admin/managers/pending', 
     verifyToken, 
-    csrfProtection, 
-    checkPermissions(['owner', 'manager']), // التأكد من صلاحية المالك أو المدير
-    [
-        body('stadium_id').isInt().withMessage('معرف الملعب غير صحيح'),
-        body('date').isDate().withMessage('التاريخ غير صحيح'),
-        body('start_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صحيحة'),
-        body('end_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صحيحة'),
-        body('reason').optional().trim().isLength({ max: 255 }).withMessage('السبب طويل جداً')
-    ],
-    handleValidationErrors,
-    blockSlotController
+    checkPermissions(['admin']), 
+    getPendingManagersController
 );
 
-// ===================================
-// ⭐ مسارات التقييمات
-// ===================================
-
-// إرسال تقييم جديد
-router.post('/api/stadiums/:stadiumId/rate', 
+// الموافقة على طلب مدير (تصبح owner)
+router.post('/api/admin/managers/:userId/approve', 
     verifyToken, 
     csrfProtection, 
-    [
-        body('rating').isInt({ min: 1, max: 5 }).withMessage('التقييم يجب أن يكون بين 1 و 5'),
-        body('comment').optional().trim().isLength({ max: 500 }).withMessage('التعليق طويل جداً')
-    ],
+    checkPermissions(['admin']), 
+    [param('userId').isUUID().withMessage('معرف المستخدم غير صحيح')],
     handleValidationErrors,
-    submitRatingController
+    approveManagerController
 );
 
+// -----------------------------------
+// مسارات طلبات اللاعبين والتقييمات مفقودة في المتحكمات أعلاه
+// يجب إضافتها لضمان اكتمال النظام
+// -----------------------------------
 
-// ... (إضافة أي مسارات أخرى متبقية بنفس الهيكل)
+// تصدير الراوتر
+module.exports = router;
