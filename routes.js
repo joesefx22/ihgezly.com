@@ -325,3 +325,23 @@ router.post('/api/bookings/:bookingId/rate', verifyToken, checkRole(['player']),
 router.get('/api/fields/:fieldId/ratings', getFieldRatingsController); 
 
 // ...
+
+// routes.js (إضافات لمسارات الإشعارات)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    // ... (الدوال السابقة)
+    getNotificationsController,
+    markAllAsReadController,
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات الإشعارات (Notifications)
+// -------------------------------------
+
+// 1. جلب الإشعارات وعدد غير المقروء
+router.get('/api/notifications', verifyToken, getNotificationsController);
+
+// 2. وضع علامة 'مقروء' على الكل
+router.post('/api/notifications/mark-all-read', verifyToken, markAllAsReadController);
