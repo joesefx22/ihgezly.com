@@ -1,3 +1,190 @@
+// db.js - PostgreSQL Database Connection & Helpers
+
+const { Pool } = require('pg');
+require('dotenv').config();
+
+// تكوين متقدم لـ PostgreSQL
+const poolConfig = process.env.DATABASE_URL ? {
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { 
+    rejectUnauthorized: false 
+  } : false
+} : {
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASS || process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'ehgzly_db',
+  port: parseInt(process.env.DB_PORT) || 5432,
+  ssl: process.env.NODE_ENV === 'production' ? { 
+    rejectUnauthorized: false 
+  } : false
+};
+
+// إضافة الإعدادات المشتركة
+Object.assign(poolConfig, {
+  max: parseInt(process.env.DB_MAX_CONNECTIONS) || 20,
+  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT) || 30000,
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 5000,
+  statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT) || 10000,
+  query_timeout: parseInt(process.env.DB_QUERY_TIMEOUT) || 10000,
+});
+
+const pool = new Pool(poolConfig);
+
+
+// ===================================
+// دوال مساعدة للاستعلام
+// ===================================
+
+/**
+ * تنفيذ استعلام واحد وإرجاع صفوف متعددة
+ */
+async function execQuery(text, params = []) {
+  const client = await pool.connect();
+  try {
+    const res = await client.query(text, params);
+    return res.rows;
+  } catch (error) {
+    console.error('❌ Database Query Error:', text, params, error.message);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * تنفيذ استعلام واحد وإرجاع صف واحد
+ */
+async function execQueryOne(text, params = []) {
+  const rows = await execQuery(text, params);
+  return rows[0] || null;
+}
+
+/**
+ * دالة المعاملات الآمنة (Transactions)
+ */
+async function withTransaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Transaction Error:', error.message);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// ===================================
+// إنشاء الجداول (مُستخرج من server.js القديم)
+// ===================================
+async function createTables() {
+  const createTablesQuery = `
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      google_id VARCHAR(255) UNIQUE,
+      name VARCHAR(100) NOT NULL,
+      email VARCHAR(100) UNIQUE NOT NULL,
+      password VARCHAR(255),
+      phone VARCHAR(20) UNIQUE,
+      role VARCHAR(50) DEFAULT 'player', -- 'player', 'owner', 'manager', 'admin'
+      is_approved BOOLEAN DEFAULT FALSE,
+      avatar_url VARCHAR(255),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS stadiums (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      name VARCHAR(100) NOT NULL,
+      location VARCHAR(255) NOT NULL,
+      type VARCHAR(50), -- 'natural', 'artificial'
+      price_per_hour DECIMAL(10, 2) NOT NULL,
+      deposit_amount DECIMAL(10, 2) DEFAULT 0,
+      image_url VARCHAR(255),
+      features JSONB, -- [ "Wifi", "Cafeteria" ]
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS bookings (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
+      stadium_id INTEGER REFERENCES stadiums(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      start_time TIME NOT NULL,
+      end_time TIME NOT NULL,
+      total_price DECIMAL(10, 2) NOT NULL,
+      deposit_paid DECIMAL(10, 2) DEFAULT 0,
+      remaining_amount DECIMAL(10, 2) NOT NULL,
+      status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'confirmed', 'cancelled', 'completed'
+      payment_id VARCHAR(255),
+      compensation_code VARCHAR(50),
+      players_needed INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS blocked_slots (
+      id SERIAL PRIMARY KEY,
+      stadium_id INTEGER REFERENCES stadiums(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      start_time TIME NOT NULL,
+      end_time TIME NOT NULL,
+      reason VARCHAR(255),
+      blocked_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(stadium_id, date, start_time) -- لمنع تضارب حظر الساعات
+    );
+    
+    CREATE TABLE IF NOT EXISTS ratings (
+      id SERIAL PRIMARY KEY,
+      stadium_id INTEGER REFERENCES stadiums(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+      comment TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(stadium_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS activity_logs (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      action VARCHAR(100) NOT NULL, -- مثال: BOOKING_CONFIRMED, PROFILE_UPDATED
+      description TEXT,
+      entity_id INTEGER, -- (مثال: id الحجز أو الملعب)
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- يمكنك إضافة جدول managers_stadiums إذا كنت تدعم عدة مدراء لملعب واحد
+  `;
+  await execQuery(createTablesQuery);
+  console.log('✅ All PostgreSQL tables checked/created successfully');
+}
+
+// دالة لفحص صحة الاتصال
+async function healthCheck() {
+  const result = await execQueryOne('SELECT NOW() as current_time, version() as version');
+  return {
+    status: 'healthy',
+    database: 'connected',
+    timestamp: result.current_time,
+    version: result.version
+  };
+}
+
+
+module.exports = {
+  pool,
+  execQuery,
+  execQueryOne,
+  withTransaction,
+  createTables,
+  healthCheck,
+};
 // db.js
 const { Pool } = require('pg');
 require('dotenv').config();
