@@ -2619,3 +2619,117 @@ module.exports = {
     profileController,
     updateProfileController,
 };
+
+// controllers.js - استيراد models موجود في بداية الملف
+const { getAdminDashboardStats, blockNewSlot, submitNewRating, getSystemActivityLogs } = require('./models');
+const { sendEmail } = require('./emailService');
+const { withTransaction } = require('./db'); 
+
+// ===================================
+// 📊 التقارير والإحصائيات (Controllers)
+// ===================================
+
+/**
+ * متحكم جلب إحصائيات لوحة التحكم للأدمن
+ */
+async function getAdminDashboardStatsController(req, res) {
+    // يجب أن تكون صلاحية الأدمن قد تم فحصها في routes.js
+    try {
+        const stats = await getAdminDashboardStats();
+        res.status(200).json(stats);
+    } catch (error) {
+        console.error('Error fetching admin dashboard stats:', error);
+        res.status(500).json({ success: false, message: "فشل في جلب إحصائيات لوحة التحكم" });
+    }
+}
+
+// ===================================
+// ⏰ إدارة الساعات المحظورة (Controllers)
+// ===================================
+
+/**
+ * متحكم حظر ساعة ملعب معينة (يستخدمه المالك أو المدير)
+ */
+async function blockSlotController(req, res) {
+    const { stadium_id, date, start_time, end_time, reason } = req.body;
+    const user_id = req.user.id;
+
+    try {
+        const newBlockedSlot = await withTransaction(async (client) => {
+            const blocked = await blockNewSlot(stadium_id, date, start_time, end_time, reason, user_id, client);
+            
+            // تسجيل النشاط
+            await models.createActivityLog(user_id, 'SLOT_BLOCKED', `حظر ساعة في الملعب ${stadium_id} بتاريخ ${date}`, stadium_id, client);
+            
+            return blocked;
+        });
+
+        res.status(201).json({ success: true, message: "تم حظر الساعة بنجاح", slot: newBlockedSlot });
+    } catch (error) {
+        console.error('Error blocking slot:', error);
+        res.status(500).json({ success: false, message: "فشل في حظر الساعة", error: error.message });
+    }
+}
+
+// ===================================
+// ⭐ التقييمات والمراجعات (Controllers)
+// ===================================
+
+/**
+ * متحكم إرسال تقييم جديد للملعب
+ */
+async function submitRatingController(req, res) {
+    const { stadiumId } = req.params;
+    const { rating, comment } = req.body;
+    const user_id = req.user.id; // المستخدم الذي قام بتسجيل الدخول
+
+    if (rating < 1 || rating > 5) {
+        return res.status(400).json({ success: false, message: "التقييم يجب أن يكون بين 1 و 5 نجوم" });
+    }
+
+    try {
+        const newRating = await withTransaction(async (client) => {
+            const ratingResult = await submitNewRating(stadiumId, user_id, rating, comment, client);
+            // تسجيل النشاط
+            await models.createActivityLog(user_id, 'RATING_SUBMITTED', `تم تقييم الملعب ${stadiumId}`, stadiumId, client);
+            
+            // 💡 هنا يمكنك أيضاً تحديث متوسط تقييم الملعب في جدول STADIUMS
+            
+            return ratingResult;
+        });
+
+        res.status(201).json({ success: true, message: "تم تسجيل تقييمك بنجاح", rating: newRating });
+    } catch (error) {
+        console.error('Error submitting rating:', error);
+        res.status(500).json({ success: false, message: "فشل في تسجيل التقييم", error: error.message });
+    }
+}
+
+// ===================================
+// 📜 سجل النشاط (Controllers)
+// ===================================
+
+/**
+ * متحكم جلب سجل النشاط للنظام (للأدمن فقط)
+ */
+async function getSystemLogsController(req, res) {
+    // يجب أن تكون صلاحية الأدمن قد تم فحصها في routes.js
+    const limit = parseInt(req.query.limit) || 15;
+    try {
+        const logs = await getSystemActivityLogs(limit);
+        res.status(200).json(logs);
+    } catch (error) {
+        console.error('Error fetching system logs:', error);
+        res.status(500).json({ success: false, message: "فشل في جلب سجل النشاط" });
+    }
+}
+
+
+// 💡 لا تنسَ تحديث تصديراتك في نهاية controllers.js
+module.exports = {
+    // ... (باقي المتحكمات)
+    getAdminDashboardStatsController,
+    blockSlotController,
+    submitRatingController,
+    getSystemLogsController,
+};
