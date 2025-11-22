@@ -410,3 +410,28 @@ router.post('/api/admin/users/:userId/reject', verifyToken, checkRole(ADMIN_ROLE
 
 // 5. إدارة الأكواد (Codes)
 router.post('/api/admin/codes', verifyToken, checkRole(ADMIN_ROLES), createCodeController);
+
+// routes.js (مسارات الدفع)
+
+// ... (استيراد الدوال)
+
+// -------------------------------------
+// مسارات الدفع (Paymob)
+// -------------------------------------
+
+// 1. بدء عملية الدفع (يستدعى من الواجهة الأمامية)
+router.post('/api/payment/initiate', verifyToken, initiatePaymentController);
+
+// 2. مسار الـ Webhook (يستدعى من Paymob - لا يحتاج توكن)
+router.post('/api/payment/webhook', paymobWebhookController); 
+
+// 3. مسار الـ Callback (لإعادة توجيه المستخدم بعد الدفع)
+router.get('/api/payment/callback', (req, res) => {
+    // Paymob ستعيد توجيه المستخدم إلى هذا المسار
+    const success = req.query.success === 'true';
+    const bookingId = req.query.merchant_order_id; 
+    const message = success ? 'success=true' : 'success=false';
+    
+    // التوجيه لصفحة ملف المستخدم لعرض حالة الحجز
+    res.redirect(`/profile.html?status=${message}&bookingId=${bookingId}`);
+});
