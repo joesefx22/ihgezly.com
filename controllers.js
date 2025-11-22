@@ -1113,7 +1113,110 @@ async function mockPaymobPaymentIntent(bookingId, amount, customerInfo) {
     };
 }
 
+// controllers.js (تعديل دالة bookingRequestController)
 
+async function bookingRequestController(req, res) {
+    // ... (جلب المتغيرات السابقة)
+    // إضافة codeId لبيانات الـ body
+    const { fieldId, bookingDate, startTime, endTime, playersNeeded, codeId } = req.body; // <-- الجديد
+
+    // ... (التحقق من البيانات ووجود الملعب وحالة الساعة)
+    
+    try {
+        const field = await models.getFieldDetailsForBooking(fieldId);
+        // ... (التحقق من حالة SlotStatus)
+
+        const totalAmount = field.price_per_hour; 
+        let finalAmount = totalAmount;
+        let depositAmount = field.deposit_amount;
+        let initialStatus = 'booked_unconfirmed';
+        let appliedCode = null;
+
+
+        // 💡 1. تطبيق الكود إذا تم تمريره
+        if (codeId) {
+            const code = await models.getCodeById(codeId);
+            
+            // تحقق بسيط مرة أخرى (تم التحقق في validateCodeController بالفعل)
+            if (code && code.is_active && code.used_count < code.max_uses) {
+                appliedCode = code;
+                
+                if (code.code_type === 'discount' && code.discount_percent > 0) {
+                    const discount = finalAmount * (code.discount_percent / 100);
+                    finalAmount -= discount;
+                } else if ((code.code_type === 'compensation' || code.code_type === 'payment_code') && code.fixed_amount > 0) {
+                    finalAmount -= code.fixed_amount;
+                }
+                
+                finalAmount = Math.max(0, finalAmount);
+                
+                // إعادة حساب العربون بعد الخصم
+                if (finalAmount <= depositAmount) {
+                     depositAmount = finalAmount; // العربون لا يجب أن يتجاوز المبلغ المتبقي
+                }
+                
+                // إذا كان المبلغ النهائي صفرًا، يتم تأكيد الحجز مباشرة
+                if (finalAmount <= 0) {
+                    depositAmount = 0;
+                    initialStatus = 'booked_confirmed';
+                }
+            }
+        }
+        
+        // 💡 2. منطق العربون العادي (للمبلغ المتبقي/بدون كود)
+        if (initialStatus !== 'booked_confirmed') {
+             const now = new Date();
+             const bookingDateTime = new Date(`${bookingDate}T${startTime}:00`);
+             const hoursDifference = (bookingDateTime - now) / (1000 * 60 * 60);
+
+             if (hoursDifference > 24) {
+                 // حالة العربون العادي: يتم تأكيد الساعة بمجرد دفع العربون
+                 initialStatus = 'booked_unconfirmed';
+             } else {
+                 // أقل من 24 ساعة، لا عربون، الحجز معلق لانتظار الموافقة اليدوية
+                 depositAmount = 0;
+                 initialStatus = 'pending_owner_approval'; 
+             }
+        }
+
+        const booking = await withTransaction(async (client) => {
+            const newBooking = await models.createNewBooking(
+                userId, fieldId, bookingDate, startTime, endTime, 
+                finalAmount, depositAmount, playersNeeded, initialStatus, client 
+            );
+            
+            // 💡 3. تسجيل استخدام الكود
+            if (appliedCode) {
+                await models.incrementCodeUsage(appliedCode.code_id, client);
+            }
+            return newBooking;
+        });
+
+        await models.createActivityLog(userId, 'BOOKING_REQUEST', `طلب حجز: ${field.name} في ${bookingDate}، المبلغ المتبقي: ${finalAmount} ج.م`);
+
+        if (depositAmount > 0) {
+            // ... (response requiresPayment)
+            res.json({
+                message: "تم حجز الساعة، يرجى إكمال عملية دفع العربون.",
+                requiresPayment: true,
+                depositAmount: depositAmount,
+                bookingId: booking.booking_id
+            });
+        } else {
+            // ... (response no payment needed)
+            res.json({
+                message: `تم تسجيل الحجز بنجاح. ${initialStatus === 'booked_confirmed' ? 'تم تأكيده بالكود.' : 'سينتظر موافقة المالك.'}`,
+                requiresPayment: false,
+                bookingId: booking.booking_id,
+                status: initialStatus
+            });
+        }
+
+    } catch (error) {
+        console.error('bookingRequestController error:', error);
+        res.status(500).json({ message: "فشل في تسجيل طلب الحجز." });
+    }
+}
 // -------------------------------------
 // 32. حجز ساعة ملعب (Booking Request)
 // -------------------------------------
