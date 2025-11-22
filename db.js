@@ -75,6 +75,19 @@ async function healthCheck() {
     }
 }
 // ... (الكود الأصلي لـ db.js) ...
+// db.js (داخل دالة createTables)
+
+// 12. Activity Logs Table (لتتبع جميع العمليات الإدارية والمهمة)
+await execQuery(`
+    CREATE TABLE IF NOT EXISTS activity_logs (
+        log_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+        action VARCHAR(100) NOT NULL, -- نوع الحدث (مثل BOOKING_CONFIRMED, USER_ROLE_UPDATED)
+        description TEXT,
+        related_id UUID, -- معرف الكيان المرتبط (حجز، ملعب، مستخدم)
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )
+`);
 
 async function createTables() {
     try {
