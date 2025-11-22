@@ -885,3 +885,70 @@ async function submitRating(bookingId, userId, fieldId, rating, comment, client)
 }
 
 // ... (يجب إضافة الدوال الجديدة إلى تصدير الدوال في نهاية models.js)
+
+// models.js (إضافات لنظام الإشعارات)
+
+/**
+ * 1. إنشاء إشعار جديد (يتم استدعاؤها من الـ Controllers)
+ */
+async function createNotification(userId, type, message, relatedId = null, client = null) {
+    // يجب التأكد من إنشاء جدول notifications في قاعدة البيانات أولاً
+    // (notification_id, user_id, type, message, related_id, is_read, created_at)
+    const query = `
+        INSERT INTO notifications (user_id, type, message, related_id)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+    `;
+    await execQuery(query, [userId, type, message, relatedId], client);
+}
+
+/**
+ * 2. جلب إشعارات المستخدم (أحدث 20 إشعار)
+ */
+async function getNotificationsByUserId(userId, limit = 20) {
+    const query = `
+        SELECT *
+        FROM notifications
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+    `;
+    const result = await execQuery(query, [userId, limit]);
+    return result.rows;
+}
+
+/**
+ * 3. جلب عدد الإشعارات غير المقروءة
+ */
+async function getUnreadNotificationsCount(userId) {
+    const query = `
+        SELECT COUNT(*)
+        FROM notifications
+        WHERE user_id = $1 AND is_read = FALSE
+    `;
+    const result = await execQueryOne(query, [userId]);
+    return parseInt(result.count || 0);
+}
+
+/**
+ * 4. وضع علامة 'مقروء' على جميع الإشعارات
+ */
+async function markAllNotificationsAsRead(userId) {
+    const query = `
+        UPDATE notifications
+        SET is_read = TRUE
+        WHERE user_id = $1 AND is_read = FALSE
+        RETURNING notification_id
+    `;
+    const result = await execQuery(query, [userId]);
+    return result.rowCount; // عدد الإشعارات التي تم تحديثها
+}
+
+module.exports = {
+    // ... (تصدير الدوال السابقة)
+    createNotification,
+    getNotificationsByUserId,
+    getUnreadNotificationsCount,
+    markAllNotificationsAsRead,
+    // ...
+};
