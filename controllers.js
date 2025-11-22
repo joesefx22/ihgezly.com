@@ -2489,3 +2489,133 @@ const { sendEmail } = require('./emailService');
 // ... (باقي الاستيرادات)
 const { sendEmail } = require('./emailService'); 
 // ...
+
+// controllers.js (يجب التأكد من استيراد هذه المكتبات والدوال في الجزء العلوي)
+const { validationResult } = require('express-validator'); 
+const models = require('./models'); 
+const { withTransaction } = require('./db'); 
+
+// ===================================
+// 🧩 دالة مساعدة لمعالجة الـ Validation
+// ===================================
+
+/**
+ * Middleware لمعالجة أخطاء express-validator
+ * يجب وضع هذه الدالة في controllers.js أو في ملف middlewares/validation.js
+ */
+function handleValidationErrors(req, res, next) {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ 
+            success: false, 
+            message: "فشل في التحقق من صحة البيانات المدخلة",
+            errors: errors.array() 
+        });
+    }
+    next();
+}
+
+
+// ===================================
+// 🏟️ إدارة الملاعب (Controllers)
+// ===================================
+
+/**
+ * متحكم إنشاء ملعب جديد
+ * يستخدم req.file من Multer و يتطلب صلاحية 'admin' أو 'owner'
+ */
+async function createStadiumController(req, res) {
+    // يجب أن تكون صلاحيات المستخدم قد تم فحصها بالفعل في routes.js (verifyToken)
+    
+    // 1. التعامل مع ملف الصورة المرفوع
+    const image_url = req.file ? `/uploads/images/${req.file.filename}` : null;
+    const { name, location, price_per_hour, deposit_amount, features, type } = req.body;
+    
+    // تحديد المالك
+    const owner_id = req.user.role === 'owner' ? req.user.id : req.body.owner_id;
+
+    try {
+        const newStadium = await withTransaction(async (client) => {
+            const data = {
+                name, location, price_per_hour, deposit_amount: parseFloat(deposit_amount), 
+                image_url, features: JSON.parse(features), type, owner_id
+            };
+            const stadium = await models.createStadium(data, client);
+            // تسجيل النشاط
+            await models.createActivityLog(req.user.id, 'STADIUM_CREATED', `تم إنشاء الملعب: ${name}`, stadium.id, client);
+            return stadium;
+        });
+
+        res.status(201).json({ success: true, message: "تم إنشاء الملعب بنجاح", stadium: newStadium });
+    } catch (error) {
+        console.error('Error creating stadium:', error);
+        res.status(500).json({ success: false, message: "فشل في إنشاء الملعب", error: error.message });
+    }
+}
+
+// ... (يمكن بناء updateStadiumController و deleteStadiumController بنفس الهيكل)
+
+
+// ===================================
+// 👥 إدارة الملف الشخصي (Controllers)
+// ===================================
+
+/**
+ * متحكم جلب بيانات الملف الشخصي
+ */
+async function profileController(req, res) {
+    // req.user هو المستخدم الحالي الذي تم استخلاصه من التوكن بواسطة verifyToken
+    try {
+        const profile = await models.getUserProfile(req.user.id); 
+        if (!profile) {
+            return res.status(404).json({ success: false, message: "لم يتم العثور على المستخدم" });
+        }
+        res.status(200).json(profile);
+    } catch (error) {
+        console.error('Error fetching profile:', error);
+        res.status(500).json({ success: false, message: "فشل في جلب البيانات" });
+    }
+}
+
+/**
+ * متحكم تحديث الملف الشخصي
+ */
+async function updateProfileController(req, res) {
+    const userId = req.user.id;
+    const { name, phone, password } = req.body;
+    
+    try {
+        const updatedUser = await withTransaction(async (client) => {
+            const dataToUpdate = { name, phone };
+            
+            if (password) {
+                // منطق التشفير يتم في models.js لضمان فصل المهام
+                dataToUpdate.password = password; 
+            }
+            
+            // التعامل مع صورة الأفاتار إذا كانت موجودة في req.file
+            if (req.file) {
+                dataToUpdate.avatar_url = `/uploads/images/${req.file.filename}`;
+            }
+
+            const user = await models.updateUserProfile(userId, dataToUpdate, client);
+            
+            await models.createActivityLog(userId, 'PROFILE_UPDATED', `تم تحديث الملف الشخصي`, null, client);
+            return user;
+        });
+
+        res.status(200).json({ success: true, message: "تم تحديث الملف بنجاح", user: updatedUser });
+    } catch (error) {
+        console.error('Error updating profile:', error);
+        res.status(500).json({ success: false, message: "فشل في تحديث الملف الشخصي" });
+    }
+}
+
+// 💡 لا تنسَ تصدير هذه الدوال في نهاية ملف controllers.js 💡
+module.exports = {
+    // ... (متحكماتك السابقة)
+    handleValidationErrors, // تصدير الدالة كـ Middleware ليتم استخدامها في routes.js
+    createStadiumController,
+    profileController,
+    updateProfileController,
+};
