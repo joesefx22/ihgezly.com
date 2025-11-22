@@ -1,3 +1,125 @@
+// controllers.js - منطق المتحكمات (Controllers Logic)
+
+const { validationResult } = require('express-validator'); 
+const models = require('./models'); 
+const { withTransaction } = require('./db'); 
+const { sendEmail } = require('./emailService'); 
+
+// ===================================
+// 🧩 دالة مساعدة لمعالجة الـ Validation
+// ===================================
+
+function handleValidationErrors(req, res, next) {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ 
+            success: false, 
+            message: "فشل في التحقق من صحة البيانات المدخلة",
+            errors: errors.array() 
+        });
+    }
+    next();
+}
+
+// ===================================
+// 👥 المصادقة والتسجيل
+// ===================================
+
+async function registerController(req, res) {
+    const { name, email, password, phone, role } = req.body;
+    try {
+        const existingUser = await models.findUserByEmail(email);
+        if (existingUser) {
+            return res.status(409).json({ success: false, message: "البريد الإلكتروني مسجل بالفعل." });
+        }
+
+        const newUser = await models.registerNewUser({ name, email, password, phone, role });
+        
+        // إرسال إيميل ترحيب أو إشعار للإدارة
+        if (newUser.role !== 'player' && !newUser.is_approved) {
+            await sendEmail(email, '⏳ حسابك قيد المراجعة', `مرحباً ${name}، تم استلام طلبك. سيتم مراجعته من الإدارة.`);
+        }
+
+        res.status(201).json({ 
+            success: true, 
+            message: "تم إنشاء الحساب بنجاح. يرجى تسجيل الدخول.", 
+            user: { id: newUser.id, role: newUser.role, is_approved: newUser.is_approved } 
+        });
+    } catch (error) {
+        console.error('Registration Error:', error);
+        res.status(500).json({ success: false, message: "فشل في عملية التسجيل." });
+    }
+}
+
+async function loginController(req, res) {
+    // يجب أن تكون هذه الدالة قد تم تنفيذها بواسطة Passport.js
+    if (req.isAuthenticated()) {
+        // إذا نجح Passport في المصادقة، فإن req.user متاح
+        const user = req.user;
+        
+        // تحقق من الموافقة للمدراء/المالكين
+        if (!user.is_approved && (user.role === 'owner' || user.role === 'manager')) {
+             return res.status(403).json({ success: false, message: "الحساب قيد المراجعة ولم تتم الموافقة عليه بعد." });
+        }
+        
+        // إرسال الرد النهائي
+        return res.json({ 
+            success: true, 
+            message: 'تم تسجيل الدخول بنجاح', 
+            user: { id: user.id, name: user.name, role: user.role } 
+        });
+    }
+    // في حالة فشل المصادقة المحلية
+    res.status(401).json({ success: false, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' });
+}
+
+// ... (باقي متحكمات المصادقة مثل logoutController, profileController, updateProfileController)
+
+// ===================================
+// 🏟️ إدارة الملاعب
+// ===================================
+
+async function createStadiumController(req, res) {
+    // ... (منطق معالجة req.file واستدعاء models.createStadium كما في الخطوة 5)
+    // ...
+}
+
+// ===================================
+// 📊 الإدارة والتقارير
+// ===================================
+
+async function getAdminDashboardStatsController(req, res) {
+    try {
+        const stats = await models.getAdminDashboardStats();
+        res.status(200).json(stats);
+    } catch (error) {
+        console.error('Error fetching admin dashboard stats:', error);
+        res.status(500).json({ success: false, message: "فشل في جلب الإحصائيات" });
+    }
+}
+
+async function getSystemLogsController(req, res) {
+    const limit = parseInt(req.query.limit) || 15;
+    try {
+        const logs = await models.getSystemActivityLogs(limit);
+        res.status(200).json(logs);
+    } catch (error) {
+        res.status(500).json({ success: false, message: "فشل في جلب سجل النشاط" });
+    }
+}
+
+// ... (باقي المتحكمات: blockSlotController, submitRatingController, confirmBookingController, etc.)
+
+module.exports = {
+    handleValidationErrors,
+    registerController,
+    loginController,
+    // ... (باقي المتحكمات)
+    getAdminDashboardStatsController,
+    getSystemLogsController,
+    createStadiumController,
+    // ...
+};
 // controllers.js
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
