@@ -163,3 +163,19 @@ async function createTables() {
 // ... (بقية db.js) ...
 
 module.exports = { execQuery, createTables, healthCheck, pool };
+
+// db.js (داخل دالة createTables)
+
+// 13. Compensation Codes Table (أكواد التعويض للاعبين)
+await execQuery(`
+    CREATE TABLE IF NOT EXISTS compensation_codes (
+        code_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        code_value VARCHAR(50) UNIQUE NOT NULL, -- الكود الفعلي (مثل COMP-XYZ123)
+        user_id UUID REFERENCES users(user_id) ON DELETE CASCADE, -- اللاعب المستفيد
+        amount NUMERIC(10, 2) NOT NULL, -- قيمة التعويض (قيمة العربون المدفوع)
+        is_used BOOLEAN DEFAULT FALSE,
+        used_at TIMESTAMP WITH TIME ZONE,
+        used_for_booking_id UUID REFERENCES bookings(booking_id) ON DELETE SET NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )
+`);
