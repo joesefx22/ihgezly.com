@@ -2383,3 +2383,38 @@ async function loadActivityLogsController(req, res) {
         res.status(500).json({ message: "فشل في جلب سجل النشاط." });
     }
 }
+
+// controllers.js (إضافة متحكم جديد)
+
+// =========================================================
+// 51. التحقق من كود التعويض
+// =========================================================
+
+async function validateCompensationCodeController(req, res) {
+    const { codeValue } = req.body;
+    const userId = req.user.id; 
+    
+    if (!codeValue) {
+        return res.status(400).json({ message: "يرجى إدخال كود التعويض." });
+    }
+
+    try {
+        const code = await models.getValidCompensationCode(codeValue, userId);
+
+        if (code) {
+            res.json({ 
+                message: "تم التحقق من الكود بنجاح.", 
+                isValid: true,
+                amount: code.amount 
+            });
+        } else {
+            res.status(404).json({ 
+                message: "كود التعويض غير صالح، أو تم استخدامه مسبقاً، أو ليس خاصاً بك.", 
+                isValid: false 
+            });
+        }
+    } catch (error) {
+        console.error('validateCompensationCodeController error:', error);
+        res.status(500).json({ message: "فشل في التحقق من الكود." });
+    }
+}
