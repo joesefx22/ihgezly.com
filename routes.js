@@ -435,3 +435,8 @@ router.get('/api/payment/callback', (req, res) => {
     // التوجيه لصفحة ملف المستخدم لعرض حالة الحجز
     res.redirect(`/profile.html?status=${message}&bookingId=${bookingId}`);
 });
+
+// routes.js (قسم مسارات اللاعب/الحجز)
+
+// 4. مسار التحقق من كود التعويض
+router.post('/api/booking/validate-compensation-code', verifyToken, validateCompensationCodeController);
