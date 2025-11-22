@@ -1347,3 +1347,78 @@ async function markCompensationCodeAsUsed(codeId, bookingId, client) {
 
 // ... (أضف الدوال الجديدة للتصدير في نهاية الملف)
 // module.exports = { ..., createCompensationCode, getValidCompensationCode, markCompensationCodeAsUsed };
+
+// models.js (دوال التحديث الآلي الجديدة)
+
+// ===================================
+// 5. دوال التحديث الآلي للحجوزات
+// ===================================
+
+/**
+ * دالة مجدولة (Scheduled Job) لتحديث حالة الحجوزات التي فات موعدها
+ */
+async function updatePastBookingsStatus() {
+    // 1. تحديث الحجوزات المؤكدة التي انتهت: (booked_confirmed) -> (played)
+    // يتم تحديث الحجوزات المؤكدة التي مر موعد انتهائها إلى "played"
+    // (booking_date + start_time * interval '1 hour' + duration * interval '1 hour') < NOW()
+    const playedQuery = `
+        UPDATE bookings
+        SET status = 'played'
+        WHERE 
+            status = 'booked_confirmed' AND 
+            (booking_date + start_time * interval '1 hour' + duration * interval '1 hour') < NOW()
+        RETURNING booking_id, user_id, field_id
+    `;
+    
+    // 2. تحديث الحجوزات غير المؤكدة التي انتهت: (booked_unconfirmed) -> (missed)
+    // يتم تحديث الحجوزات التي لم يتم دفع عربونها أو تأكيدها يدوياً من المالك ومر موعد انتهائها إلى "missed"
+    const missedQuery = `
+        UPDATE bookings
+        SET status = 'missed'
+        WHERE 
+            status = 'booked_unconfirmed' AND 
+            (booking_date + start_time * interval '1 hour' + duration * interval '1 hour') < NOW()
+        RETURNING booking_id, user_id, field_id
+    `;
+
+    try {
+        const playedResult = await execQuery(playedQuery);
+        const missedResult = await execQuery(missedQuery);
+        
+        // تسجيل النشاط للحجوزات التي تحولت إلى played
+        playedResult.rows.forEach(async (booking) => {
+            // نستخدم user_id الحقيقي لصاحب الحجز
+            await createActivityLog(
+                booking.user_id, 
+                'BOOKING_STATUS_AUTO_PLAYED', 
+                `تم تحديث حالة الحجز ${booking.booking_id} آلياً إلى 'played' لانتهاء موعده.`, 
+                booking.booking_id
+            );
+        });
+
+        // تسجيل النشاط للحجوزات التي تحولت إلى missed
+        missedResult.rows.forEach(async (booking) => {
+            await createActivityLog(
+                booking.user_id, 
+                'BOOKING_STATUS_AUTO_MISSED', 
+                `تم تحديث حالة الحجز ${booking.booking_id} آلياً إلى 'missed' لعدم تأكيده وانتهاء موعده.`, 
+                booking.booking_id
+            );
+            // إرسال إشعار للاعب بأن حجزه انتهى ولم يتم تأكيده
+            await createNotification(
+                booking.user_id, 
+                'BOOKING_MISSED', 
+                `انتهى موعد حجزك ${booking.booking_id} ولم يتم تأكيده من قبل المالك.`, 
+                booking.booking_id
+            );
+        });
+        
+        const totalUpdated = playedResult.rowCount + missedResult.rowCount;
+        return { played: playedResult.rowCount, missed: missedResult.rowCount, total: totalUpdated };
+    } catch (error) {
+        console.error('Error in scheduled job (updatePastBookingsStatus):', error);
+        throw error;
+    }
+}
+
+// ... (تأكد من تصدير الدالة في نهاية models.js)
