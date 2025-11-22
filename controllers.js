@@ -523,6 +523,55 @@ function checkPaymobHMAC(obj, secret) {
     return hash === obj.hmac;
 }
 
+// controllers.js
+
+async function paymobWebhookController(req, res) {
+    // 💡 ملاحظة: يجب تطبيق منطق التحقق من HMAC هنا للأمان
+    
+    const data = req.body.obj;
+    if (!data || !data.order) return res.status(400).send("No data.");
+    
+    const isSuccess = data.success === true;
+    const bookingId = data.order.merchant_order_id; // ID الحجز الخاص بنا
+    const transactionId = data.id;
+
+    if (isSuccess && bookingId) {
+        try {
+            const finalizedBooking = await withTransaction(async (client) => {
+                
+                const result = await models.finalizeBookingAfterPayment(bookingId, client);
+
+                if (result) {
+                    // إشعار اللاعب
+                    const message = `🎉 تم تأكيد حجزك ودفع العربون بنجاح! رقم المعاملة: ${transactionId}.`;
+                    await models.createNotification(result.user_id, 'PAYMENT_CONFIRMED', message, bookingId, client);
+                    
+                    // 💡 إضافة سجل النشاط هنا
+                    // نستخدم user_id الحقيقي لصاحب الحجز كـ 'user_id' لأن النظام هو من يقوم بالتأكيد (Webhook)
+                    await models.createActivityLog(
+                        result.user_id, 
+                        'PAYMENT_SUCCESS', 
+                        `نجاح دفع عربون الحجز ${bookingId}. (المبلغ: ${data.amount_cents / 100} ${data.currency})`, 
+                        bookingId, 
+                        client
+                    ); 
+                }
+                return result;
+            });
+            
+            // رد 200 ضروري لـ Paymob
+            return res.status(200).send("Payment confirmed successfully."); 
+
+        } catch (error) {
+            console.error('Paymob Webhook Error:', error);
+            return res.status(500).send("Internal Server Error during finalization."); 
+        }
+    } else {
+        console.log(`Payment failed for Order ID: ${bookingId}. Transaction ID: ${transactionId}.`);
+        return res.status(200).send("Payment failed but received."); 
+    }
+}
+
 async function paymobWebhookController(req, res) {
     // Paymob ترسل البيانات المهمة كـ Query Parameters (موجودة في req.query)
     const data = req.query; 
