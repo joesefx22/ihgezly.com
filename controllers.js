@@ -1596,6 +1596,34 @@ async function getAllPlayerRequestsController(req, res) {
     }
 }
 
+// controllers.js (تعديل دالة togglePlayerRequestController)
+
+async function togglePlayerRequestController(req, res) {
+    // ... (الكود السابق)
+    try {
+        let result;
+        await withTransaction(async (client) => {
+            if (action === 'join') {
+                result = await models.joinPlayerRequest(requestId, userId, client);
+                
+                if (result) {
+                    // 💡 إشعار لصاحب الطلب بأن لاعبًا انضم
+                    const requestInfo = await models.getPlayerRequestDetails(requestId); // تحتاج إلى دالة لجلب تفاصيل الطلب
+                    if (requestInfo && requestInfo.user_id !== userId) {
+                        const joiningPlayer = req.user.name; // افترض أن اسم المستخدم متوفر
+                        const message = `🎉 انضم اللاعب ${joiningPlayer} إلى طلب لاعبيك لملعب ${requestInfo.field_name}.`;
+                        await models.createNotification(requestInfo.user_id, 'PLAYER_JOINED', message, requestId, client);
+                    }
+                }
+            } else { // 'leave'
+                result = await models.leavePlayerRequest(requestId, userId, client);
+            }
+        });
+        // ... (بقية الدالة)
+    } catch (error) {
+        // ...
+    }
+}
 // انضمام ومغادرة (تستخدم نفس الـ API مع اختلاف الباراميتر)
 async function togglePlayerRequestController(req, res) {
     const { requestId, action } = req.params; // action يمكن أن تكون 'join' أو 'leave'
