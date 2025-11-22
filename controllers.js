@@ -1908,6 +1908,56 @@ async function confirmBookingController(req, res) {
 }
 
 // إلغاء حجز
+// controllers.js
+
+async function cancelBookingController(req, res) {
+    const { bookingId } = req.params;
+    const userId = req.user.id; // ID المالك/الموظف الذي قام بالإجراء
+    
+    try {
+        const bookingToCancel = await models.getBookingInfoForPayment(bookingId);
+        if (!bookingToCancel) return res.status(404).json({ message: "الحجز غير موجود." });
+
+        // التحقق الأمني
+        const { ids: stadiumIds } = await getManagedStadiumIds(userId);
+        if (!stadiumIds.includes(bookingToCancel.field_id)) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لإدارة هذا الحجز." });
+        }
+
+        const cancelled = await withTransaction(async (client) => {
+            const result = await models.cancelBooking(bookingId, client);
+            
+            if (result) {
+                // إشعار اللاعب
+                const message = `❌ تم إلغاء حجزك في ${bookingToCancel.field_name}.`;
+                await models.createNotification(result.user_id, 'BOOKING_CANCELLED', message, bookingId, client);
+                
+                // 💡 إضافة سجل النشاط هنا
+                await models.createActivityLog(
+                    userId, 
+                    'OWNER_CANCEL_BOOKING', 
+                    `قام المالك/الموظف بإلغاء الحجز ${bookingId} لـ ${bookingToCancel.user_name}`, 
+                    bookingId, 
+                    client
+                );
+                
+                // 💡 منطق إصدار كود تعويض سيتم إضافته لاحقاً هنا
+            }
+            return result;
+        });
+
+        if (cancelled) {
+            res.json({ message: "تم إلغاء الحجز بنجاح.", booking: cancelled });
+        } else {
+             res.status(400).json({ message: "فشل الإلغاء، ربما حالة الحجز غير مناسبة." });
+        }
+
+    } catch (error) {
+        console.error('cancelBookingController error:', error);
+        res.status(500).json({ message: "فشل في إلغاء الحجز." });
+    }
+}
+
 async function cancelBookingController(req, res) {
     const { bookingId } = req.params;
     const userId = req.user.id;
