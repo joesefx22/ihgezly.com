@@ -195,3 +195,22 @@ passport.deserializeUser(async (id, done) => {
 // ... (تحت تهيئة session)
 app.use(passport.initialize());
 app.use(passport.session()); // إذا كنت تستخدم Sessions مع Passport
+
+
+// server.js (قبل استيراد routes.js)
+// ...
+
+// 💡 خدمة الملفات الثابتة (الـ Frontend)
+app.use(express.static(path.join(__dirname, 'public')));
+// 💡 خدمة مجلد الصور المحملة (uploads)
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images'))); 
+
+// ربط المسارات
+const routes = require('./routes');
+app.use('/', routes);
+
+// ... (في نهاية الملف)
+// 💡 بدء السيرفر
+app.listen(PORT, () => {
+    // ... (رسائل بدء التشغيل)
+});
