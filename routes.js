@@ -316,3 +316,12 @@ router.post('/api/player-requests/:requestId/:action', verifyToken, checkRole(['
 router.post('/api/bookings/:bookingId/rate', verifyToken, checkRole(['player']), submitRatingController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js
+
+// ...
+
+// 7. جلب تقييمات ملعب معين (لعرضها في واجهة الملعب)
+router.get('/api/fields/:fieldId/ratings', getFieldRatingsController); 
+
+// ...
