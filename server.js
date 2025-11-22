@@ -1,3 +1,54 @@
+// server.js (تعديلات بعد تعريف app، وقبل استيراد المسارات)
+
+// ... (تأكد من استيراد المكتبات: helmet, rateLimit, cookieParser, csrf)
+
+/* ========= 🛡️ إعدادات الأمان (Security Middleware) ========= */
+// 1. الأمان العام: إعدادات HTTP Headers
+app.use(helmet()); 
+
+// 2. إعداد Cookies و Sessions لـ CSRF (مفترض أنها موجودة)
+app.use(cookieParser(process.env.COOKIE_SECRET || 'a-very-secret-key'));
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'another-super-secret',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { 
+        secure: isProduction, // استخدم secure cookies في الإنتاج
+        httpOnly: true, // يمنع الوصول من JavaScript
+        maxAge: 1000 * 60 * 60 * 24 // يوم واحد
+    }
+}));
+
+
+// 3. إعداد CSRF Protection
+const csrf = require('csurf'); // التأكد من الاستيراد
+const csrfProtection = csrf({ cookie: true });
+
+
+// 4. إعداد Rate Limiting العام والخاص بالمصادقة
+const rateLimit = require('express-rate-limit'); // التأكد من الاستيراد
+
+// Rate Limiter عام (يُطبق على جميع المسارات)
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 دقيقة
+    max: 100, // 100 طلب لكل IP خلال 15 دقيقة
+    message: "تم تجاوز الحد الأقصى للطلبات المسموح بها. يرجى المحاولة لاحقاً.",
+});
+app.use(generalLimiter); // تطبيق الحد الأقصى العام
+
+// Rate Limiter خاص بمسارات المصادقة (أكثر صرامة)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 دقيقة
+    max: 5, // 5 محاولات تسجيل دخول/تسجيل حساب
+    message: "لقد تجاوزت الحد الأقصى لمحاولات المصادقة (تسجيل الدخول/التسجيل). يرجى المحاولة بعد 15 دقيقة.",
+});
+
+// 💡 يجب تصدير العناصر الأمنية ليتم استخدامها في routes.js:
+// قد تحتاج إلى تعديل ملف routes.js لجعله دالة أو استخدام exports لتعريفها في مكان مركزي.
+// لأغراض التوضيح، سنفترض أنها مُصدّرة الآن.
+module.exports.csrfProtection = csrfProtection;
+module.exports.authLimiter = authLimiter;
+
 // server.js (إضافة دالة التشغيل المجدولة)
 
 // ... (تأكد من استيراد models)
