@@ -1,3 +1,45 @@
+// emailService.js - خدمة Nodemailer للإشعارات
+
+const nodemailer = require('nodemailer');
+require('dotenv').config(); 
+
+// إعداد الناقل (Transporter) باستخدام إعدادات البيئة
+const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST, 
+    port: process.env.EMAIL_PORT || 587,
+    secure: process.env.EMAIL_SECURE === 'true', 
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+/**
+ * دالة إرسال بريد إلكتروني
+ */
+async function sendEmail(to, subject, body) {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.warn(`[EMAIL-MOCK] لم يتم تكوين خدمة البريد. تم تجاهل الإرسال إلى: ${to}`);
+        return; 
+    }
+    
+    try {
+        let info = await transporter.sendMail({
+            from: `"${process.env.EMAIL_FROM_NAME || 'احجزلي'}" <${process.env.EMAIL_USER}>`,
+            to: to,
+            subject: subject,
+            html: body, 
+        });
+
+        console.log(`✅ تم إرسال الرسالة بنجاح إلى ${to}. ID: ${info.messageId}`);
+    } catch (error) {
+        console.error(`❌ فشل إرسال البريد الإلكتروني إلى ${to}:`, error);
+    }
+}
+
+module.exports = {
+    sendEmail
+};
 // emailService.js (ملف جديد)
 
 const nodemailer = require('nodemailer');
