@@ -742,3 +742,146 @@ module.exports = {
     incrementCodeUsage,
     // ...
 };
+
+// models.js (إضافات لمنطق طلبات اللاعبين والتقييمات)
+
+// ===================================
+// 1. دوال إدارة طلبات اللاعبين (Player Requests)
+// ===================================
+
+/**
+ * إنشاء طلب لاعبين إضافيين مرتبط بحجز مؤكد
+ */
+async function createPlayerRequest(bookingId, playersNeeded, notes, userId, client) {
+    const query = `
+        INSERT INTO player_requests (booking_id, user_id, players_needed, notes, status)
+        VALUES ($1, $2, $3, $4, 'open')
+        RETURNING *
+    `;
+    const result = await execQuery(query, [bookingId, userId, playersNeeded, notes], client);
+    return result.rows[0];
+}
+
+/**
+ * جلب جميع الطلبات النشطة مع تفاصيل الملعب وعدد المشاركين
+ */
+async function getAllActivePlayerRequests(filters = {}) {
+    // جلب جميع الطلبات المفتوحة التي لم يكتمل عددها بعد
+    let query = `
+        SELECT 
+            pr.*, 
+            f.name AS field_name, 
+            f.location,
+            b.booking_date,
+            b.start_time,
+            b.end_time,
+            u.name AS booker_name,
+            (
+                SELECT COUNT(*) 
+                FROM request_participants rp 
+                WHERE rp.request_id = pr.request_id
+            ) AS current_participants
+        FROM player_requests pr
+        JOIN bookings b ON pr.booking_id = b.booking_id
+        JOIN fields f ON b.field_id = f.field_id
+        JOIN users u ON pr.user_id = u.user_id
+        WHERE pr.status = 'open' AND b.booking_date >= CURRENT_DATE 
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (filters.area) {
+        query += ` AND f.area = $${paramIndex++}`;
+        params.push(filters.area);
+    }
+    
+    query += ` ORDER BY b.booking_date ASC, b.start_time ASC`;
+
+    const result = await execQuery(query, params);
+    return result.rows;
+}
+
+/**
+ * انضمام لاعب إلى طلب
+ */
+async function joinPlayerRequest(requestId, userId, client) {
+    const query = `
+        INSERT INTO request_participants (request_id, user_id)
+        VALUES ($1, $2)
+        ON CONFLICT (request_id, user_id) DO NOTHING
+        RETURNING *
+    `;
+    const result = await execQuery(query, [requestId, userId], client);
+    return result.rowCount > 0;
+}
+
+/**
+ * مغادرة لاعب لطلب
+ */
+async function leavePlayerRequest(requestId, userId, client) {
+    const query = `
+        DELETE FROM request_participants 
+        WHERE request_id = $1 AND user_id = $2
+        RETURNING *
+    `;
+    const result = await execQuery(query, [requestId, userId], client);
+    return result.rowCount > 0;
+}
+
+// ===================================
+// 2. دوال نظام التقييمات (Ratings)
+// ===================================
+
+/**
+ * التحقق مما إذا كان يمكن للمستخدم تقييم الحجز
+ */
+async function canUserRateBooking(bookingId, userId) {
+    const query = `
+        SELECT 
+            b.booking_id, 
+            b.status, 
+            f.field_id,
+            (SELECT COUNT(*) FROM ratings r WHERE r.booking_id = b.booking_id AND r.user_id = $2) AS existing_rating
+        FROM bookings b
+        JOIN fields f ON b.field_id = f.field_id
+        WHERE b.booking_id = $1 AND b.user_id = $2 
+    `;
+    const result = await execQuery(query, [bookingId, userId]);
+    const booking = result.rows[0];
+
+    if (!booking) return { canRate: false, message: "الحجز غير موجود أو ليس لك." };
+    // يتم التقييم فقط للحجوزات التي تم اللعب فيها (يجب أن ينتقل حالة الحجز إلى 'played' من واجهة المالك/الموظف)
+    if (booking.status !== 'played') return { canRate: false, message: "لا يمكن تقييم إلا بعد لعب الساعة." };
+    if (parseInt(booking.existing_rating) > 0) return { canRate: false, message: "لقد قمت بتقييم هذا الحجز مسبقاً." };
+
+    return { canRate: true, fieldId: booking.field_id };
+}
+
+/**
+ * تسجيل تقييم جديد للملعب وتحديث المتوسط
+ */
+async function submitRating(bookingId, userId, fieldId, rating, comment, client) {
+    const insertQuery = `
+        INSERT INTO ratings (booking_id, user_id, field_id, rating_value, comment)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+    `;
+    const ratingResult = await execQuery(insertQuery, [bookingId, userId, fieldId, rating, comment], client);
+    
+    // تحديث متوسط التقييم للملعب
+    const updateFieldRatingQuery = `
+        UPDATE fields
+        SET average_rating = (
+            SELECT AVG(rating_value) 
+            FROM ratings 
+            WHERE field_id = $1
+        )
+        WHERE field_id = $1
+    `;
+    await execQuery(updateFieldRatingQuery, [fieldId], client);
+
+    return ratingResult.rows[0];
+}
+
+// ... (يجب إضافة الدوال الجديدة إلى تصدير الدوال في نهاية models.js)
