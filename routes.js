@@ -345,3 +345,37 @@ router.get('/api/notifications', verifyToken, getNotificationsController);
 
 // 2. وضع علامة 'مقروء' على الكل
 router.post('/api/notifications/mark-all-read', verifyToken, markAllAsReadController);
+
+// routes.js (إضافات لمسارات المالك/الموظف)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    // ... (الدوال السابقة)
+    loadOwnerStadiumsController,
+    loadOwnerBookingsController,
+    confirmBookingController,
+    cancelBookingController,
+    loadOwnerStatsController,
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات صاحب الملعب (Owner/Employee)
+// -------------------------------------
+
+const OWNER_ROLES = ['owner', 'employee'];
+
+// 1. جلب إحصائيات لوحة التحكم
+router.get('/api/owner/dashboard/stats', verifyToken, checkRole(OWNER_ROLES), loadOwnerStatsController);
+
+// 2. جلب الملاعب التي يديرها
+router.get('/api/owner/stadiums', verifyToken, checkRole(OWNER_ROLES), loadOwnerStadiumsController);
+
+// 3. جلب حجوزات الملاعب التي يديرها
+router.get('/api/owner/bookings', verifyToken, checkRole(OWNER_ROLES), loadOwnerBookingsController);
+
+// 4. تأكيد حجز (بدون عربون)
+router.post('/api/owner/bookings/:bookingId/confirm', verifyToken, checkRole(OWNER_ROLES), confirmBookingController);
+
+// 5. إلغاء حجز
+router.post('/api/owner/bookings/:bookingId/cancel', verifyToken, checkRole(OWNER_ROLES), cancelBookingController);
