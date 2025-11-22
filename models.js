@@ -1285,3 +1285,65 @@ async function getActivityLogs(limit = 20) {
 
 // ... (أضف الدوال الجديدة للتصدير في نهاية الملف)
 // module.exports = { ..., createActivityLog, getActivityLogs };
+
+// models.js (دوال التعويض)
+
+// ===================================
+// 4. دوال التعويض (Compensation Codes)
+// ===================================
+
+/**
+ * إنشاء كود تعويض جديد للاعب
+ */
+async function createCompensationCode(userId, amount, relatedBookingId, client) {
+    // نستخدم UUID لضمان تفرد الكود
+    const codeValue = `COMP-${uuidv4().substring(0, 8).toUpperCase()}`; 
+    
+    const query = `
+        INSERT INTO compensation_codes (user_id, code_value, amount)
+        VALUES ($1, $2, $3)
+        RETURNING code_value, amount
+    `;
+    const result = await execQueryOne(query, [userId, codeValue, amount], client);
+    
+    // تسجيل هذا الحدث في سجل النشاط
+    await createActivityLog(
+        userId, 
+        'COMPENSATION_ISSUED', 
+        `إصدار كود تعويض بقيمة ${amount} لتعويض الحجز الملغي ${relatedBookingId}`, 
+        relatedBookingId, 
+        client
+    );
+
+    return result;
+}
+
+/**
+ * التحقق من كود التعويض وجلبه إذا كان صالحاً
+ */
+async function getValidCompensationCode(codeValue, userId) {
+    const query = `
+        SELECT *
+        FROM compensation_codes
+        WHERE code_value = $1 
+        AND user_id = $2 
+        AND is_used = FALSE
+    `;
+    return await execQueryOne(query, [codeValue, userId]);
+}
+
+/**
+ * استخدام كود التعويض وتحديث حالته
+ */
+async function markCompensationCodeAsUsed(codeId, bookingId, client) {
+    const query = `
+        UPDATE compensation_codes
+        SET is_used = TRUE, used_at = CURRENT_TIMESTAMP, used_for_booking_id = $1
+        WHERE code_id = $2
+        RETURNING *
+    `;
+    return await execQueryOne(query, [bookingId, codeId], client);
+}
+
+// ... (أضف الدوال الجديدة للتصدير في نهاية الملف)
+// module.exports = { ..., createCompensationCode, getValidCompensationCode, markCompensationCodeAsUsed };
