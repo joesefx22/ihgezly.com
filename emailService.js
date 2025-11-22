@@ -52,3 +52,49 @@ module.exports = {
     // 💡 تصدير الدالة هنا
     sendEmail 
 };
+
+// emailService.js
+
+const nodemailer = require('nodemailer');
+// استيراد dotenv لضمان عمل إعدادات البيئة
+require('dotenv').config(); 
+
+// إعداد الناقل (Transporter) باستخدام إعدادات البيئة
+const transporter = nodemailer.createTransport({
+    // هذه الإعدادات تأتي من البيئة (مثل .env)
+    host: process.env.EMAIL_HOST || 'smtp.example.com', 
+    port: process.env.EMAIL_PORT || 587,
+    secure: process.env.EMAIL_SECURE === 'true', 
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+/**
+ * دالة إرسال بريد إلكتروني
+ */
+async function sendEmail(to, subject, body) {
+    // كود فحص التهيئة لتجنب الأخطاء
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.warn(`[EMAIL-MOCK] لم يتم تكوين خدمة البريد. تم تجاهل الإرسال إلى: ${to}`);
+        return; 
+    }
+    
+    try {
+        let info = await transporter.sendMail({
+            from: `"${process.env.EMAIL_FROM_NAME || 'احجزلي'}" <${process.env.EMAIL_USER}>`,
+            to: to,
+            subject: subject,
+            html: body, 
+        });
+
+        console.log(`✅ تم إرسال الرسالة بنجاح إلى ${to}. ID: ${info.messageId}`);
+    } catch (error) {
+        console.error(`❌ فشل إرسال البريد الإلكتروني إلى ${to}:`, error);
+    }
+}
+
+module.exports = {
+    sendEmail
+};
