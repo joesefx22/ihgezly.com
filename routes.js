@@ -281,3 +281,38 @@ router.put('/api/admin/codes/:codeId/status', verifyToken, checkRole(['admin']),
 router.post('/api/codes/validate', verifyToken, checkRole(['player']), validateCodeController);
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافات لمسارات طلبات اللاعبين والتقييمات)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    // ... (الدوال السابقة)
+    createPlayerRequestController,
+    getAllPlayerRequestsController,
+    togglePlayerRequestController,
+    submitRatingController,
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات طلبات اللاعبين (Player Requests)
+// -------------------------------------
+
+// 1. إنشاء طلب جديد (صاحب الحجز)
+router.post('/api/player-requests', verifyToken, checkRole(['player']), createPlayerRequestController);
+
+// 2. جلب جميع الطلبات النشطة (لصفحة players.html)
+router.get('/api/player-requests', verifyToken, checkRole(['player']), getAllPlayerRequestsController);
+
+// 3. انضمام/مغادرة لطلب
+router.post('/api/player-requests/:requestId/:action', verifyToken, checkRole(['player']), togglePlayerRequestController); 
+// :action هنا يمكن أن تكون 'join' أو 'leave'
+
+// -------------------------------------
+// مسارات التقييمات (Ratings)
+// -------------------------------------
+
+// 4. إرسال تقييم لحجز مكتمل (بعد اللعب)
+router.post('/api/bookings/:bookingId/rate', verifyToken, checkRole(['player']), submitRatingController);
+
+// ... (بقية ملف routes.js)
