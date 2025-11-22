@@ -1,3 +1,131 @@
+// routes.js - تجميع المسارات
+
+const express = require('express');
+const router = express.Router();
+const { body } = require('express-validator');
+
+// استيراد المكونات الأساسية
+const { csrfProtection } = require('./server'); // من الملف server.js
+const { verifyToken, checkPermissions } = require('./middlewares/auth'); 
+const { uploadSingle } = require('./uploadConfig'); 
+const controllers = require('./controllers'); 
+
+
+// ===================================
+// 👥 مسارات المصادقة (Auth Routes)
+// ===================================
+
+// مسار التسجيل
+router.post('/api/signup',
+    csrfProtection,
+    [
+        body('name').trim().notEmpty().withMessage('الاسم مطلوب'),
+        body('email').isEmail().withMessage('بريد إلكتروني غير صحيح'),
+        body('password').isLength({ min: 6 }).withMessage('يجب أن تكون كلمة المرور 6 أحرف على الأقل'),
+        body('role').isIn(['player', 'owner', 'manager']).withMessage('دور المستخدم غير صالح')
+    ],
+    controllers.handleValidationErrors,
+    controllers.registerController
+);
+
+// مسار تسجيل الدخول
+router.post('/api/login', 
+    csrfProtection,
+    controllers.loginController // يفترض أن يستخدم passport.authenticate
+);
+
+// مسار تسجيل الدخول عبر Google
+router.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+router.get('/auth/google/callback', 
+    passport.authenticate('google', { failureRedirect: '/login.html' }),
+    (req, res) => {
+        res.redirect('/'); // إعادة توجيه المستخدم بعد نجاح تسجيل الدخول
+    }
+);
+
+// مسار جلب الملف الشخصي (للتأكد من تسجيل الدخول)
+router.get('/api/me', verifyToken, controllers.profileController);
+
+// ===================================
+// 🏟️ مسارات إدارة الملاعب (Admin/Owner)
+// ===================================
+
+// إنشاء ملعب جديد (يتطلب صلاحية owner أو admin)
+router.post('/api/admin/stadiums/create', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['admin', 'owner']), 
+    uploadSingle('pitch_image'), // Multer يتعامل مع رفع الصورة
+    [
+        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
+        body('price_per_hour').isNumeric().toFloat().isFloat({ min: 10 }).withMessage('السعر غير صالح'),
+    ],
+    controllers.handleValidationErrors,
+    controllers.createStadiumController
+);
+
+// مسارات جلب الملاعب الخاصة بالمالك
+router.get('/api/owner/stadiums', 
+    verifyToken, 
+    checkPermissions(['admin', 'owner', 'manager']),
+    controllers.getOwnerStadiumsController // يجب إضافة هذا المتحكم في controllers.js
+);
+
+// ===================================
+// 📅 مسارات الحجز والدفع
+// ===================================
+
+router.post('/api/bookings/create', 
+    verifyToken, 
+    csrfProtection, 
+    // ... (Validation)
+    controllers.createBookingController 
+);
+
+router.post('/api/payment/confirm', 
+    verifyToken, 
+    csrfProtection, 
+    controllers.confirmPaymentController 
+);
+
+// ===================================
+// 📊 مسارات الإدارة والتقارير
+// ===================================
+
+router.get('/api/admin/dashboard', 
+    verifyToken, 
+    checkPermissions(['admin']), 
+    controllers.getAdminDashboardStatsController
+);
+
+router.get('/api/admin/activity-logs', 
+    verifyToken, 
+    checkPermissions(['admin']), 
+    controllers.getSystemLogsController
+);
+
+// ===================================
+// 🛑 مسارات الساعات المحظورة والتقييمات
+// ===================================
+
+router.post('/api/owner/slots/block', 
+    verifyToken, 
+    csrfProtection, 
+    checkPermissions(['owner', 'manager']), 
+    // ... (Validation)
+    controllers.blockSlotController
+);
+
+router.post('/api/stadiums/:stadiumId/rate', 
+    verifyToken, 
+    csrfProtection, 
+    // ... (Validation)
+    controllers.submitRatingController
+);
+
+
+module.exports = router;
+
 // routes.js
 const express = require('express');
 const router = express.Router();
