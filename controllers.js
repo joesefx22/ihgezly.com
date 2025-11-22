@@ -2049,6 +2049,45 @@ async function updateUserRoleController(req, res) {
     }
 }
 
+// controllers.js
+
+async function approveManagerController(req, res) {
+    const userIdToApprove = req.params.userId;
+    const adminId = req.user.id; // ID الأدمن الذي قام بالإجراء
+    
+    try {
+        const approvedUser = await withTransaction(async (client) => {
+             // نفترض أن models.updateUserManagerStatus تعيد بيانات المستخدم المحدثة
+             const user = await models.updateUserManagerStatus(userIdToApprove, { isApproved: true }, client); 
+             
+             if (user) {
+                 // 💡 إضافة سجل النشاط هنا
+                 await models.createActivityLog(
+                    adminId, 
+                    'ADMIN_MANAGER_APPROVED', 
+                    `الموافقة على حساب المدير/الموظف ${user.name} (${user.user_id})`, 
+                    user.user_id, 
+                    client
+                );
+                 
+                 // 💡 إشعار المستخدم (لإعلامه بالموافقة)
+                 const message = `✅ تهانينا! تمت الموافقة على حسابك كـ ${user.role} ويمكنك تسجيل الدخول.`;
+                 await models.createNotification(user.user_id, 'ACCOUNT_APPROVED', message, user.user_id, client);
+             }
+             return user;
+        });
+        
+        if (approvedUser) {
+            res.json({ message: "تمت الموافقة على المدير بنجاح.", user: approvedUser });
+        } else {
+            res.status(404).json({ message: "لم يتم العثور على المستخدم أو تمت الموافقة عليه مسبقاً." });
+        }
+    } catch (error) {
+        console.error('approveManagerController error:', error);
+        res.status(500).json({ message: "فشل في الموافقة على المدير." });
+    }
+}
+
 async function approveManagerController(req, res) {
     try {
         const approvedUser = await models.updateUserManagerStatus(req.params.userId, { isApproved: true });
