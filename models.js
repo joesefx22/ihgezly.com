@@ -1065,3 +1065,132 @@ async function cancelBooking(bookingId, client) {
 }
 
 // ... (تأكد من إضافة الدوال الجديدة إلى تصدير الدوال في نهاية models.js)
+
+// models.js (إضافات لمنطق الأدمن)
+
+// ===================================
+// 2. دوال إدارة الأدمن (Admin Management)
+// ===================================
+
+/**
+ * جلب إحصائيات لوحة الأدمن العامة
+ */
+async function getAdminDashboardStats() {
+    // 1. إجمالي المستخدمين
+    const totalUsers = await execQueryOne(`SELECT COUNT(*) FROM users`);
+
+    // 2. إجمالي الملاعب
+    const totalStadiums = await execQueryOne(`SELECT COUNT(*) FROM fields`);
+
+    // 3. إجمالي الإيرادات والحجوزات (المكتملة والمؤكدة)
+    const bookingStats = await execQueryOne(`
+        SELECT 
+            COUNT(*) AS total_bookings, 
+            COALESCE(SUM(total_amount - remaining_amount), 0) AS total_revenue
+        FROM bookings
+        WHERE status IN ('booked_confirmed', 'played')
+    `);
+
+    // 4. الحسابات بانتظار الموافقة
+    const pendingManagers = await execQueryOne(`
+        SELECT COUNT(*) 
+        FROM users 
+        WHERE is_approved = FALSE AND role IN ('owner', 'employee')
+    `);
+
+    return {
+        totalUsers: parseInt(totalUsers.count || 0),
+        totalStadiums: parseInt(totalStadiums.count || 0),
+        totalBookings: parseInt(bookingStats.total_bookings || 0),
+        totalRevenue: parseFloat(bookingStats.total_revenue || 0),
+        pendingManagers: parseInt(pendingManagers.count || 0)
+    };
+}
+
+/**
+ * جلب جميع المستخدمين
+ */
+async function getAllUsers() {
+    const query = `
+        SELECT user_id, name, email, phone, role, is_approved, created_at
+        FROM users
+        ORDER BY created_at DESC
+    `;
+    const result = await execQuery(query);
+    return result.rows;
+}
+
+/**
+ * جلب المديرين (Owners/Employees) بانتظار الموافقة
+ */
+async function getPendingManagers() {
+    const query = `
+        SELECT user_id, name, email, phone, role, created_at
+        FROM users
+        WHERE is_approved = FALSE AND role IN ('owner', 'employee')
+        ORDER BY created_at ASC
+    `;
+    const result = await execQuery(query);
+    return result.rows;
+}
+
+/**
+ * تحديث دور المستخدم أو حالة الموافقة
+ */
+async function updateUserManagerStatus(userId, updates, client = null) {
+    const setParts = [];
+    const values = [];
+    let paramIndex = 1;
+
+    // بناء جملة التحديث
+    if (updates.role) {
+        setParts.push(`role = $${paramIndex++}`);
+        values.push(updates.role);
+    }
+    if (updates.isApproved !== undefined) {
+        setParts.push(`is_approved = $${paramIndex++}`);
+        values.push(updates.isApproved);
+    }
+    
+    if (setParts.length === 0) return null;
+
+    values.push(userId);
+    
+    const query = `
+        UPDATE users
+        SET ${setParts.join(', ')}
+        WHERE user_id = $${paramIndex}
+        RETURNING user_id, name, email, role, is_approved
+    `;
+    const result = await execQuery(query, values, client);
+    return result.rows[0];
+}
+
+/**
+ * إنشاء ملعب جديد
+ */
+async function createStadium(data, client = null) {
+    // ... (منطق إنشاء ملعب - تم إضافته في الخطوة السابقة)
+    // للتذكير: يجب أن يحتوي على منطق لـ INSERT INTO fields
+}
+
+/**
+ * حذف ملعب وجميع البيانات المرتبطة به (يجب أن يتم داخل Transaction)
+ */
+async function deleteStadium(fieldId, client) {
+    // يتم حذف البيانات المرتبطة أولاً لتجنب مشاكل الـ Foreign Key
+    // ... (منطق حذف البيانات المرتبطة: طلبات اللاعبين، التقييمات، الحجوزات، الساعات، التخصيص)
+    // ...
+    const result = await execQuery(`DELETE FROM fields WHERE field_id = $1 RETURNING field_id`, [fieldId], client);
+    return result.rowCount > 0;
+}
+
+/**
+ * إنشاء كود خصم/دفع جديد
+ */
+async function createCode(data, client = null) {
+    // ... (منطق إنشاء كود - تم إضافته في الخطوة السابقة)
+    // للتذكير: يجب أن يحتوي على منطق لـ INSERT INTO codes
+}
+
+// ... (تأكد من تصدير جميع الدوال الجديدة في نهاية models.js)
