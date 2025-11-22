@@ -1721,3 +1721,137 @@ async function markAllAsReadController(req, res) {
         res.status(500).json({ message: "فشل في تحديث حالة الإشعارات." });
     }
 }
+
+// controllers.js (إضافات لمنطق المالك/الموظف)
+
+// دالة مساعدة لجلب معرفات الملاعب التي يديرها المستخدم
+async function getManagedStadiumIds(userId) {
+    const stadiums = await models.getStadiumsByManagerId(userId);
+    const ids = stadiums.map(s => s.field_id);
+    return { ids, stadiums };
+}
+
+// =========================================================
+// 44. Owner/Employee Controllers
+// =========================================================
+
+// جلب الملاعب التي يديرها
+async function loadOwnerStadiumsController(req, res) {
+    try {
+        const { stadiums } = await getManagedStadiumIds(req.user.id);
+        res.json(stadiums);
+    } catch (error) {
+        console.error('loadOwnerStadiumsController error:', error);
+        res.status(500).json({ message: "فشل في جلب الملاعب المرتبطة." });
+    }
+}
+
+// جلب إحصائيات لوحة التحكم
+async function loadOwnerStatsController(req, res) {
+    try {
+        const { ids: stadiumIds } = await getManagedStadiumIds(req.user.id);
+        if (stadiumIds.length === 0) return res.json({});
+        
+        const stats = await models.getOwnerStats(stadiumIds);
+        res.json(stats);
+    } catch (error) {
+        console.error('loadOwnerStatsController error:', error);
+        res.status(500).json({ message: "فشل في جلب الإحصائيات." });
+    }
+}
+
+// جلب حجوزات الملاعب التي يديرها
+async function loadOwnerBookingsController(req, res) {
+    try {
+        const { ids: stadiumIds } = await getManagedStadiumIds(req.user.id);
+        if (stadiumIds.length === 0) return res.json([]);
+        
+        const bookings = await models.getOwnerBookings(stadiumIds);
+        res.json(bookings);
+    } catch (error) {
+        console.error('loadOwnerBookingsController error:', error);
+        res.status(500).json({ message: "فشل في جلب الحجوزات." });
+    }
+}
+
+// تأكيد حجز (بدون عربون)
+async function confirmBookingController(req, res) {
+    const { bookingId } = req.params;
+    const userId = req.user.id;
+    
+    try {
+        const bookingToConfirm = await models.getBookingInfoForPayment(bookingId);
+        if (!bookingToConfirm) return res.status(404).json({ message: "الحجز غير موجود." });
+
+        // التحقق الأمني: التأكد من أن المالك يدير هذا الملعب
+        const { ids: stadiumIds } = await getManagedStadiumIds(userId);
+        if (!stadiumIds.includes(bookingToConfirm.field_id)) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لإدارة هذا الحجز." });
+        }
+        
+        const confirmed = await withTransaction(async (client) => {
+            const result = await models.confirmBooking(bookingId, client);
+            if (result) {
+                // إشعار اللاعب
+                const message = `🎉 تم تأكيد حجزك في ${bookingToConfirm.field_name}.`;
+                await models.createNotification(result.user_id, 'BOOKING_CONFIRMED', message, bookingId, client);
+                // سجل النشاط
+                await models.createActivityLog(userId, 'OWNER_CONFIRM_BOOKING', `تأكيد حجز ${bookingId}`, client);
+            }
+            return result;
+        });
+
+        if (confirmed) {
+            res.json({ message: "تم تأكيد الحجز بنجاح.", booking: confirmed });
+        } else {
+             res.status(400).json({ message: "فشل التأكيد، ربما الحجز مدفوع أو مؤكد مسبقاً." });
+        }
+    } catch (error) {
+        console.error('confirmBookingController error:', error);
+        res.status(500).json({ message: "فشل في تأكيد الحجز." });
+    }
+}
+
+// إلغاء حجز
+async function cancelBookingController(req, res) {
+    const { bookingId } = req.params;
+    const userId = req.user.id;
+    
+    try {
+        const bookingToCancel = await models.getBookingInfoForPayment(bookingId);
+        if (!bookingToCancel) return res.status(404).json({ message: "الحجز غير موجود." });
+
+        // التحقق الأمني
+        const { ids: stadiumIds } = await getManagedStadiumIds(userId);
+        if (!stadiumIds.includes(bookingToCancel.field_id)) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لإدارة هذا الحجز." });
+        }
+
+        const cancelled = await withTransaction(async (client) => {
+            const result = await models.cancelBooking(bookingId, client);
+            
+            if (result) {
+                // إشعار اللاعب
+                const message = `❌ تم إلغاء حجزك في ${bookingToCancel.field_name}.`;
+                await models.createNotification(result.user_id, 'BOOKING_CANCELLED', message, bookingId, client);
+                // سجل النشاط
+                await models.createActivityLog(userId, 'OWNER_CANCEL_BOOKING', `إلغاء حجز ${bookingId}`, client);
+                
+                // 💡 يجب إضافة منطق إصدار كود تعويض إذا كان هناك عربون مدفوع مسبقاً (متبقي للتنفيذ لاحقاً)
+            }
+            return result;
+        });
+
+        if (cancelled) {
+            res.json({ message: "تم إلغاء الحجز بنجاح.", booking: cancelled });
+        } else {
+             res.status(400).json({ message: "فشل الإلغاء، ربما حالة الحجز غير مناسبة." });
+        }
+
+    } catch (error) {
+        console.error('cancelBookingController error:', error);
+        res.status(500).json({ message: "فشل في إلغاء الحجز." });
+    }
+}
+
+// ... (تصدير جميع الدوال في نهاية controllers.js)
