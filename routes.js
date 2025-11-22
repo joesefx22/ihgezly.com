@@ -544,3 +544,52 @@ router.post('/api/admin/stadiums',
     handleValidationErrors,
     createStadiumController // هذا المتحكم يجب أن يكون جاهزاً لاستقبال req.file
 );
+
+// routes.js - (في الجزء العلوي)
+const { body, validationResult } = require('express-validator');
+const { csrfProtection } = require('./server'); // أو أي مكان تم تصديرها منه
+const { verifyToken } = require('./middlewares/auth'); // استخراج الـ Middleware الخاص بك
+const { uploadSingle } = require('./uploadConfig'); // استيراد Multer
+
+// ... (استيراد جميع المتحكمات المفقودة مثل profileController, createStadiumController)
+// const { createStadiumController, updateProfileController, ... } = require('./controllers');
+
+
+// 💡 مسار إنشاء ملعب جديد (مثال على استخدام Multer و Validation)
+router.post('/api/admin/stadiums/create',
+    verifyToken, // التحقق من المصادقة
+    csrfProtection, // حماية CSRF
+    uploadSingle('pitch_image'), // Multer لرفع صورة الملعب
+    [
+        // التحقق من المدخلات
+        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
+        body('location').trim().notEmpty().withMessage('الموقع مطلوب'),
+        body('price_per_hour').isNumeric().toFloat().isFloat({ min: 10 }).withMessage('السعر غير صالح'),
+    ],
+    handleValidationErrors, // يجب أن تكون هذه الدالة مستخرجة أيضاً من server.js القديم أو معرّفة هنا
+    createStadiumController // المتحكم الأصلي
+);
+
+// 💡 مسار تحديث الملف الشخصي
+router.put('/api/profile/update',
+    verifyToken, 
+    csrfProtection, 
+    [
+        // التحقق من المدخلات (تأكد من استخراج هذا المنطق)
+        body('name').optional().trim().notEmpty().withMessage('الاسم مطلوب'),
+        body('phone').optional().isMobilePhone('ar-EG').withMessage('رقم الهاتف غير صالح'),
+    ],
+    handleValidationErrors, 
+    updateProfileController
+);
+
+
+// 💡 مسار جلب الملف الشخصي (GET)
+router.get('/api/me', verifyToken, profileController);
+
+
+// 💡 مسار جلب قائمة المدن أو المناطق (GET)
+// إذا كان هذا المسار موجوداً في server.js القديم
+router.get('/api/cities', getCitiesController); 
+
+// ... (إضافة جميع المسارات المتبقية بنفس الهيكل)
