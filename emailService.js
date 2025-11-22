@@ -98,3 +98,48 @@ async function sendEmail(to, subject, body) {
 module.exports = {
     sendEmail
 };
+
+// emailService.js - يجب استيراد هذه الدالة واستخدامها في controllers.js لـ الإشعارات
+
+const nodemailer = require('nodemailer');
+// تأكد من تهيئة .env في server.js للوصول إلى متغيرات البيئة
+require('dotenv').config(); 
+
+// 1. استخراج إعدادات الناقل (Transporter)
+const transporter = nodemailer.createTransport({
+    // هذه الإعدادات يجب أن تكون موجودة في .env أو تم استخراجها من ملفك القديم
+    host: process.env.EMAIL_HOST || 'smtp.example.com', 
+    port: process.env.EMAIL_PORT || 587,
+    secure: process.env.EMAIL_SECURE === 'true', // استخدم true للـ 465، و false للـ 587
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+/**
+ * إرسال بريد إلكتروني HTML
+ */
+async function sendEmail(to, subject, body) {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.warn(`[EMAIL-MOCK] لم يتم تكوين خدمة البريد. تم تجاهل الإرسال إلى: ${to}`);
+        return; 
+    }
+    
+    try {
+        let info = await transporter.sendMail({
+            from: `"${process.env.EMAIL_FROM_NAME || 'احجزلي'}" <${process.env.EMAIL_USER}>`,
+            to: to,
+            subject: subject,
+            html: body, 
+        });
+
+        console.log(`✅ تم إرسال الرسالة بنجاح إلى ${to}. ID: ${info.messageId}`);
+    } catch (error) {
+        console.error(`❌ فشل إرسال البريد الإلكتروني إلى ${to}:`, error);
+    }
+}
+
+module.exports = {
+    sendEmail
+};
