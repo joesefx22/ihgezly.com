@@ -43,3 +43,12 @@ async function sendEmail(to, subject, body) {
 module.exports = {
     sendEmail
 };
+
+// emailService.js (نهاية الملف)
+
+// ... (الكود الكامل لـ transporter و sendEmail)
+
+module.exports = {
+    // 💡 تصدير الدالة هنا
+    sendEmail 
+};
