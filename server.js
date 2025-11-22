@@ -166,3 +166,32 @@ async function startServer() {
 }
 
 startServer();
+
+// server.js (في الجزء العلوي)
+
+const passport = require('passport'); // 💡 ضروري
+const GoogleStrategy = require('passport-google-oauth20').Strategy; // 💡 ضروري إذا كنت تستخدم مصادقة Google
+
+// ... (باقي تهيئة Express و DB)
+
+/* ========= تهيئة Passport.js ========= */
+// قم باستخراج هذا الجزء من ملف server.js القديم ووضعه هنا:
+passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "/auth/google/callback"
+}, (accessToken, refreshToken, profile, done) => {
+    // منطق البحث عن المستخدم أو إنشاءه هنا (باستخدام دوال models.js)
+    // هذا المنطق يجب أن يكون موجوداً في ملفك server.js القديم
+}));
+
+passport.serializeUser((user, done) => { done(null, user.id); });
+passport.deserializeUser(async (id, done) => {
+    // منطق جلب المستخدم من قاعدة البيانات
+    const user = await models.getUserById(id); 
+    done(null, user);
+});
+
+// ... (تحت تهيئة session)
+app.use(passport.initialize());
+app.use(passport.session()); // إذا كنت تستخدم Sessions مع Passport
