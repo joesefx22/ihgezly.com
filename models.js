@@ -1244,3 +1244,44 @@ async function finalizeBookingAfterPayment(bookingId, client) {
 }
 
 // ... (تأكد من تصدير الدوال الجديدة)
+
+// models.js (دوال سجل النشاط)
+
+// ===================================
+// 3. دوال سجل النشاط (Activity Logs)
+// ===================================
+
+/**
+ * إنشاء سجل نشاط جديد
+ */
+async function createActivityLog(userId, action, description, relatedId = null, client = null) {
+    const query = `
+        INSERT INTO activity_logs (user_id, action, description, related_id)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+    `;
+    await execQuery(query, [userId, action, description, relatedId], client);
+}
+
+/**
+ * جلب سجلات النشاط (لصفحة الأدمن)
+ */
+async function getActivityLogs(limit = 20) {
+    const query = `
+        SELECT 
+            al.action, 
+            al.description, 
+            al.created_at, 
+            u.name AS user_name, 
+            al.related_id
+        FROM activity_logs al
+        LEFT JOIN users u ON al.user_id = u.user_id
+        ORDER BY al.created_at DESC
+        LIMIT $1
+    `;
+    const result = await execQuery(query, [limit]);
+    return result.rows;
+}
+
+// ... (أضف الدوال الجديدة للتصدير في نهاية الملف)
+// module.exports = { ..., createActivityLog, getActivityLogs };
