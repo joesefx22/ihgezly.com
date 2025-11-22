@@ -1636,3 +1636,34 @@ async function submitRatingController(req, res) {
 }
 
 // ... (تصدير جميع الدوال في نهاية controllers.js)
+
+// controllers.js (إضافات لمنطق الإشعارات)
+
+// -------------------------------------
+// 42. جلب إشعارات المستخدم (Notifications)
+// -------------------------------------
+async function getNotificationsController(req, res) {
+    const userId = req.user.id;
+    try {
+        const notifications = await models.getNotificationsByUserId(userId);
+        const unreadCount = await models.getUnreadNotificationsCount(userId);
+        res.json({ notifications, unreadCount });
+    } catch (error) {
+        console.error('getNotificationsController error:', error);
+        res.status(500).json({ message: "فشل في جلب الإشعارات." });
+    }
+}
+
+// -------------------------------------
+// 43. وضع علامة 'مقروء' على جميع الإشعارات
+// -------------------------------------
+async function markAllAsReadController(req, res) {
+    const userId = req.user.id;
+    try {
+        const count = await models.markAllNotificationsAsRead(userId);
+        res.json({ message: `تم وضع علامة 'مقروء' على ${count} إشعار.`, updatedCount: count });
+    } catch (error) {
+        console.error('markAllAsReadController error:', error);
+        res.status(500).json({ message: "فشل في تحديث حالة الإشعارات." });
+    }
+}
