@@ -1546,3 +1546,88 @@ module.exports = {
     getUserProfile,
     updateUserProfile,
 };
+
+// models.js - استيراد execQuery و execQueryOne و withTransaction موجود في بداية الملف
+
+// ===================================
+// 📊 التقارير والإحصائيات (Reports Logic)
+// ===================================
+
+/**
+ * جلب إحصائيات لوحة التحكم الأساسية للأدمن
+ */
+async function getAdminDashboardStats() {
+    // يمكن تجميع استعلامات متعددة في استعلام واحد لتحسين الأداء
+    const query = `
+        SELECT 
+            (SELECT COUNT(*) FROM users) AS total_users,
+            (SELECT COUNT(*) FROM stadiums) AS total_stadiums,
+            (SELECT COUNT(*) FROM bookings WHERE status = 'confirmed') AS total_confirmed_bookings,
+            (SELECT SUM(deposit_amount) FROM bookings WHERE status = 'confirmed') AS total_revenue;
+    `;
+    return execQueryOne(query);
+}
+
+// ===================================
+// ⏰ إدارة الساعات المحظورة (Blocked Slots Logic)
+// ===================================
+
+/**
+ * إضافة ساعة محظورة جديدة (للمدير/المالك)
+ */
+async function blockNewSlot(stadium_id, date, start_time, end_time, reason, user_id) {
+    const query = `
+        INSERT INTO blocked_slots (stadium_id, date, start_time, end_time, reason, blocked_by_user_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *;
+    `;
+    const values = [stadium_id, date, start_time, end_time, reason, user_id];
+    return execQueryOne(query, values);
+}
+
+// ===================================
+// ⭐ التقييمات والمراجعات (Ratings Logic)
+// ===================================
+
+/**
+ * إرسال تقييم جديد للملعب
+ */
+async function submitNewRating(stadium_id, user_id, rating, comment) {
+    const query = `
+        INSERT INTO ratings (stadium_id, user_id, rating, comment)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (stadium_id, user_id) DO UPDATE 
+        SET rating = EXCLUDED.rating, comment = EXCLUDED.comment, created_at = NOW()
+        RETURNING *;
+    `;
+    const values = [stadium_id, user_id, rating, comment];
+    return execQueryOne(query, values);
+}
+
+// ===================================
+// 📜 سجل النشاط (Logs Logic)
+// ===================================
+
+/**
+ * جلب آخر سجلات النشاط للنظام (للأدمن)
+ */
+async function getSystemActivityLogs(limit = 15) {
+    const query = `
+        SELECT al.id, al.action, al.description, al.created_at, u.name as user_name
+        FROM activity_logs al
+        LEFT JOIN users u ON al.user_id = u.id
+        ORDER BY al.created_at DESC
+        LIMIT $1;
+    `;
+    return execQuery(query, [limit]);
+}
+
+
+// 💡 لا تنسَ تحديث تصديراتك في نهاية models.js
+module.exports = {
+    // ... (باقي الدوال)
+    getAdminDashboardStats,
+    blockNewSlot,
+    submitNewRating,
+    getSystemActivityLogs,
+};
