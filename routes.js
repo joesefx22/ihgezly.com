@@ -526,3 +526,21 @@ router.post('/api/booking/create',
     handleValidationErrors,
     createBookingController
 );
+
+// routes.js (في الجزء العلوي)
+const { uploadSingle } = require('./uploadConfig');
+// ...
+
+// 💡 مثال: مسار إنشاء ملعب جديد
+router.post('/api/admin/stadiums', 
+    verifyToken, 
+    csrfProtection, 
+    uploadSingle, // 💡 هذا الـ middleware سيتعامل مع الرفع
+    [
+        // التحقق من المدخلات الأخرى
+        body('name').notEmpty().withMessage('اسم الملعب مطلوب'),
+        // ...
+    ],
+    handleValidationErrors,
+    createStadiumController // هذا المتحكم يجب أن يكون جاهزاً لاستقبال req.file
+);
