@@ -1,15 +1,21 @@
 // models.js - منطق التعامل مع قاعدة البيانات (PostgreSQL)
+// يحتوي على جميع دوال CRUD للتعامل مع الجداول بشكل آمن ومُنظَّم.
 
 const { execQuery, execQueryOne, withTransaction } = require('./db');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 
-// ===================================
-// 🛠️ دوال مساعدة عامة
-// ===================================
+// =======================================================
+// 🛠️ دوال مساعدة عامة وسجلات النشاط (General Helpers & Logs)
+// =======================================================
 
 /**
- * تسجيل نشاط المستخدم/النظام
+ * تسجيل نشاط المستخدم/النظام (Activity Log)
+ * @param {string} user_id - مُعرّف المستخدم الذي قام بالعملية.
+ * @param {string} action - نوع الإجراء (مثال: 'BOOKING_CREATE', 'ADMIN_ACTION').
+ * @param {string} description - وصف تفصيلي للعملية.
+ * @param {string} entity_id - مُعرّف الكيان الذي تم العمل عليه (ملعب/حجز).
+ * @param {Client} client - كائن اتصال المعاملة (إذا كان داخل withTransaction).
  */
 async function createActivityLog(user_id, action, description, entity_id = null, client = null) {
     const query = `
@@ -18,127 +24,26 @@ async function createActivityLog(user_id, action, description, entity_id = null,
         RETURNING *;
     `;
     const values = [user_id, action, description, entity_id];
-    const dbFunction = client ? client.query.bind(client) : execQueryOne;
-    return dbFunction(query, values);
-}
-
-// ===================================
-// 👥 المستخدمون والمصادقة
-// ===================================
-
-async function getUserById(id) {
-    const query = `SELECT id, name, email, phone, role, is_approved, avatar_url FROM users WHERE id = $1;`;
-    return execQueryOne(query, [id]);
-}
-
-async function findUserByEmail(email) {
-    const query = `SELECT * FROM users WHERE email = $1;`;
-    return execQueryOne(query, [email]);
-}
-
-async function registerNewUser(data, client) {
-    const { name, email, password, phone, role } = data;
-    const hashedPassword = await bcrypt.hash(password, 10);
-    // is_approved = TRUE للاعبين، و FALSE للمدراء/المالكين
-    const is_approved = (role === 'player' || role === 'admin'); 
     
-    const query = `
-        INSERT INTO users (name, email, password, phone, role, is_approved)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, name, email, role, is_approved;
-    `;
-    const values = [name, email, hashedPassword, phone, role, is_approved];
-    const dbFunction = client || execQueryOne;
-    return dbFunction(query, values);
+    // استخدم client.query داخل المعاملات أو execQueryOne خارجها
+    if (client) {
+        return client.query(query, values); 
+    } else {
+        return execQueryOne(query, values);
+    }
 }
 
-async function findOrCreateGoogleUser(data) {
-    let user = await findUserByEmail(data.email);
-    if (user) return user;
-
-    // إذا لم يكن موجوداً، قم بإنشاء حساب جديد
-    const query = `
-        INSERT INTO users (google_id, name, email, role, is_approved)
-        VALUES ($1, $2, $3, 'player', TRUE)
-        RETURNING id, name, email, role, is_approved;
-    `;
-    const values = [data.googleId, data.name, data.email];
-    return execQueryOne(query, values);
-}
-
-// ... (دوال تحديث الملف الشخصي)
-// ... (دوال إدارة المستخدمين للأدمن)
-
-// ===================================
-// 🏟️ إدارة الملاعب
-// ===================================
-
-async function getStadiumById(id) {
-    const query = `SELECT * FROM stadiums WHERE id = $1;`;
-    return execQueryOne(query, [id]);
-}
-
-async function createStadium(data, client) {
-    const { name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type } = data;
-    const query = `
-        INSERT INTO stadiums (name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING *;
-    `;
-    const values = [name, location, owner_id, price_per_hour, deposit_amount, image_url, JSON.stringify(features), type];
-    const dbFunction = client || execQueryOne; 
-    return dbFunction(query, values);
-}
-
-// ... (دوال updateStadium, deleteStadium)
-
-// ===================================
-// 🗓️ إدارة الحجوزات
-// ===================================
-
-async function createNewBooking(data, client) {
-    const { user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, status, payment_id, players_needed } = data;
-    const query = `
-        INSERT INTO bookings (user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, status, payment_id, players_needed)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING *;
-    `;
-    const values = [user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, status, payment_id, players_needed];
-    const dbFunction = client || execQueryOne;
-    return dbFunction(query, values);
-}
-
-async function updateBookingStatus(bookingId, status, client) {
-    const query = `
-        UPDATE bookings SET status = $1, updated_at = NOW() 
-        WHERE id = $2
-        RETURNING *;
-    `;
-    const dbFunction = client || execQueryOne;
-    return dbFunction(query, [status, bookingId]);
-}
-
-// ... (دوال جلب الحجوزات للمستخدم/المالك/الأدمن)
-// ... (دوال إدارة الساعات المحظورة - blockNewSlot)
-
-// ===================================
-// 📊 التقارير والإحصائيات
-// ===================================
-
-async function getAdminDashboardStats() {
-    const query = `
-        SELECT 
-            (SELECT COUNT(*) FROM users) AS total_users,
-            (SELECT COUNT(*) FROM stadiums) AS total_stadiums,
-            (SELECT COUNT(*) FROM bookings WHERE status = 'confirmed') AS total_confirmed_bookings,
-            (SELECT SUM(deposit_paid) FROM bookings WHERE status = 'confirmed') AS total_revenue;
-    `;
-    return execQueryOne(query);
-}
-
+/**
+ * جلب آخر سجلات النشاط للنظام (للأدمن)
+ */
 async function getSystemActivityLogs(limit = 15) {
     const query = `
-        SELECT al.id, al.action, al.description, al.created_at, u.name as user_name
+        SELECT 
+            al.id, 
+            al.action, 
+            al.description, 
+            al.created_at, 
+            u.name as user_name
         FROM activity_logs al
         LEFT JOIN users u ON al.user_id = u.id
         ORDER BY al.created_at DESC
@@ -147,1623 +52,539 @@ async function getSystemActivityLogs(limit = 15) {
     return execQuery(query, [limit]);
 }
 
-
-module.exports = {
-    // دوال المصادقة
-    getUserById,
-    findUserByEmail,
-    registerNewUser,
-    findOrCreateGoogleUser,
-
-    // دوال الملاعب
-    getStadiumById,
-    createStadium,
-    // ... (updateStadium, deleteStadium)
-
-    // دوال الحجوزات
-    createNewBooking,
-    updateBookingStatus,
-    // ... (باقي دوال الحجز/الدفع)
-
-    // دوال الإدارة والتقارير
-    getAdminDashboardStats,
-    getSystemActivityLogs,
-    createActivityLog,
-    // ... (باقي دوال التقارير/التقييمات/الحظر)
-};
-// models.js
-const { execQuery } = require('./db');
+// =======================================================
+// 👥 المستخدمون والمصادقة (Users & Auth)
+// =======================================================
 
 /**
- * دالة جلب المستخدم للتحقق من تسجيل الدخول
+ * جلب مستخدم بواسطة المعرف (ID)
  */
-async function getUserByEmail(email) {
+async function getUserById(id) {
     const query = `
-        SELECT user_id, email, password_hash, role, name
-        FROM users
-        WHERE email = $1
+        SELECT id, name, email, phone, role, is_approved, avatar_url, created_at 
+        FROM users 
+        WHERE id = $1;
     `;
-    const result = await execQuery(query, [email]);
-    return result.rows[0] || null;
+    return execQueryOne(query, [id]);
 }
 
 /**
- * دالة إنشاء مستخدم جديد (افتراضياً role='player')
+ * جلب مستخدم بواسطة البريد الإلكتروني (للتسجيل والدخول)
  */
-async function createUser(name, email, hashedPassword) {
-    // Role الافتراضي هو 'player' كما هو مطلوب في قواعد العمل
-    const defaultRole = 'player'; 
-    const query = `
-        INSERT INTO users (name, email, password_hash, role)
-        VALUES ($1, $2, $3, $4)
-        RETURNING user_id, name, email, role;
-    `;
-    const result = await execQuery(query, [name, email, hashedPassword, defaultRole]);
-    return result.rows[0];
-}
-
-module.exports = { getUserByEmail, createUser };
-
-// models.js (إضافة الدوال التالية)
-
-// ... (الدوال الحالية: getUserByEmail, createUser, getDetailedUserById) ...
-
-/**
- * جلب حجوزات لاعب معين
- */
-async function getPlayerBookings(playerId) {
-    const query = `
-        SELECT 
-            b.*, f.name AS field_name, f.location
-        FROM bookings b
-        JOIN fields f ON b.field_id = f.field_id
-        WHERE b.player_id = $1
-        ORDER BY b.booking_date DESC, b.start_time DESC
-    `;
-    const result = await execQuery(query, [playerId]);
-    return result.rows;
+async function findUserByEmail(email) {
+    const query = `SELECT * FROM users WHERE email = $1;`; // نرجع كل شيء بما في ذلك الـ password للتحقق
+    return execQueryOne(query, [email]);
 }
 
 /**
- * تحديث الملف الشخصي للاعب (الاسم، الهاتف، كلمة المرور)
+ * تسجيل مستخدم جديد (Registration)
  */
-async function updatePlayerProfile(userId, { name, phone, password_hash }) {
-    // ... (منطق بناء الاستعلام كما هو موضح في خطوة التفكير) ...
-    const fieldsToUpdate = [];
-    const params = [userId];
-    let paramIndex = 2;
-
-    if (name) {
-        fieldsToUpdate.push(`name = $${paramIndex++}`);
-        params.push(name);
-    }
-    if (phone) {
-        fieldsToUpdate.push(`phone = $${paramIndex++}`);
-        params.push(phone);
-    }
-    if (password_hash) {
-        fieldsToUpdate.push(`password_hash = $${paramIndex++}`);
-        params.push(password_hash);
-    }
-
-    if (fieldsToUpdate.length === 0) {
-        return getDetailedUserById(userId);
-    }
-
-    const query = `
-        UPDATE users
-        SET ${fieldsToUpdate.join(', ')}, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = $1
-        RETURNING user_id, name, email, role, phone;
-    `;
+async function registerNewUser(data) {
+    const { name, email, password, phone, role = 'player' } = data;
     
-    const result = await execQuery(query, params);
-    return result.rows[0];
-}
+    // نتحقق من عدم وجود المستخدم مسبقًا
+    if (await findUserByEmail(email)) {
+        throw new Error('User already exists');
+    }
 
-/**
- * جلب طلبات اللاعبين المفتوحة (لـ 'لاعبوني معاكم')
- */
-async function getActivePlayerRequests() {
-    const query = `
-        SELECT 
-            pr.request_id, pr.players_needed, b.booking_date, b.start_time, b.end_time, 
-            f.name AS field_name, u.name AS booker_name
-        FROM player_requests pr
-        JOIN bookings b ON pr.booking_id = b.booking_id
-        JOIN fields f ON b.field_id = f.field_id
-        JOIN users u ON pr.requester_id = u.user_id
-        WHERE pr.status = 'active' 
-        AND b.booking_date >= CURRENT_DATE 
-        ORDER BY b.booking_date ASC, b.start_time ASC
-    `;
-    const result = await execQuery(query);
-    return result.rows;
-}
-
-module.exports = { 
-    // ... (جميع الدوال الأخرى)
-    getPlayerBookings,
-    updatePlayerProfile,
-    getActivePlayerRequests
-};
-// models.js (إضافة الدوال التالية إلى ملف النماذج)
-// ... (تأكد من وجود الدوال السابقة مثل getDetailedUserById) ...
-
-/**
- * جلب جميع الملاعب النشطة
- */
-async function getAvailableFields() {
-    const query = `
-        SELECT field_id, name, location, area, type, price_per_hour, deposit_amount
-        FROM fields
-        WHERE is_active = TRUE
-    `;
-    const result = await execQuery(query);
-    return result.rows;
-}
-
-/**
- * جلب جميع الساعات المحجوزة لملعب وتاريخ معين
- */
-async function getBookedSlots(fieldId, date) {
-    const query = `
-        SELECT start_time, end_time
-        FROM bookings
-        WHERE field_id = $1 AND booking_date = $2 
-        AND status IN ('booked_confirmed', 'booked_unconfirmed')
-    `;
-    const result = await execQuery(query, [fieldId, date]);
-    return result.rows;
-}
-
-/**
- * إنشاء سجل حجز جديد (يجب استدعاؤها داخل معاملة)
- */
-async function createBooking(client, bookingData) {
-    const { field_id, player_id, booking_date, start_time, end_time, status, deposit_paid, total_amount, deposit_amount } = bookingData;
-
-    const query = `
-        INSERT INTO bookings (field_id, player_id, booking_date, start_time, end_time, status, deposit_paid, total_amount, deposit_amount)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING booking_id, status, deposit_amount
-    `;
-    const params = [field_id, player_id, booking_date, start_time, end_time, status, deposit_paid, total_amount, deposit_amount];
-
-    const result = await client.query(query, params);
-    return result.rows[0];
-}
-
-/**
- * جلب تفاصيل حجز معينة (لصفحة الدفع payment.html)
- */
-async function getBookingDetails(bookingId) {
-    const query = `
-        SELECT 
-            b.booking_id, b.booking_date, b.start_time, b.end_time, b.total_amount, b.deposit_amount, b.status,
-            f.name AS field_name, f.location, f.price_per_hour
-        FROM bookings b
-        JOIN fields f ON b.field_id = f.field_id
-        WHERE b.booking_id = $1
-    `;
-    const result = await execQuery(query, [bookingId]);
-    return result.rows[0];
-}
-
-module.exports = { 
-    // ... (تصدير الدوال الأخرى)
-    getAvailableFields,
-    getBookedSlots,
-    createBooking,
-    getBookingDetails 
-};
-
-// models.js (إضافة الدوال التالية)
-
-/**
- * جلب جميع الملاعب المعينة لموظف معين
- */
-async function getEmployeeAssignedFields(employeeId) {
-    const query = `
-        SELECT f.field_id, f.name, f.location
-        FROM fields f
-        JOIN employee_assignments ea ON f.field_id = ea.field_id
-        WHERE ea.user_id = $1 AND f.is_active = TRUE
-    `;
-    const result = await execQuery(query, [employeeId]);
-    return result.rows;
-}
-
-/**
- * جلب حجوزات يوم معين لملعب معين
- */
-async function getBookingsForEmployee(fieldId, date) {
-    const query = `
-        SELECT 
-            b.booking_id, b.booking_date, b.start_time, b.end_time, b.status, 
-            b.total_amount, b.deposit_amount, b.deposit_paid,
-            u.name AS player_name, u.phone AS player_phone
-        FROM bookings b
-        JOIN users u ON b.player_id = u.user_id
-        WHERE b.field_id = $1 AND b.booking_date = $2
-        AND b.status IN ('booked_confirmed', 'booked_unconfirmed', 'played', 'missed')
-        ORDER BY b.start_time ASC
-    `;
-    const result = await execQuery(query, [fieldId, date]);
-    return result.rows;
-}
-
-/**
- * تحديث حالة الحجز (Check-in/Confirm Cash)
- */
-async function updateBookingStatus(client, bookingId, status, isCashConfirmed = false) {
-    const updateCash = isCashConfirmed ? ', deposit_paid = TRUE ' : '';
+    const hashedPassword = await bcrypt.hash(password, 10);
     
+    // is_approved تكون TRUE افتراضياً للاعبين، و FALSE لمالكي الملاعب الجدد حتى تتم الموافقة عليهم
+    const is_approved = role === 'player' ? 'TRUE' : 'FALSE';
+
     const query = `
-        UPDATE bookings
-        SET status = $2, updated_at = CURRENT_TIMESTAMP ${updateCash}
-        WHERE booking_id = $1
-        RETURNING booking_id, status
+        INSERT INTO users (name, email, password, phone, role, is_approved)
+        VALUES ($1, $2, $3, $4, $5, ${is_approved})
+        RETURNING id, name, email, phone, role, is_approved, created_at;
     `;
-    // لاحظ استخدام client.query داخل معاملة (Transaction)
-    const result = await client.query(query, [bookingId, status]);
-    if (result.rowCount === 0) {
-        throw new Error("لم يتم العثور على الحجز أو تم تحديثه مسبقاً.");
-    }
-    return result.rows[0];
-}
-
-module.exports = {
-    // ... (تصدير الدوال السابقة)
-    getEmployeeAssignedFields,
-    getBookingsForEmployee,
-    updateBookingStatus
-};
-// models.js (أضف هذه الدوال في نهاية الملف)
-
-/**
- * جلب ملاعب مالك معين
- */
-async function getOwnerStadiums(ownerId) {
-    const query = `
-        SELECT field_id, name, location, price_per_hour, deposit_amount
-        FROM fields
-        WHERE owner_id = $1 AND is_active = TRUE
-        ORDER BY name ASC
-    `;
-    const result = await execQuery(query, [ownerId]);
-    return result.rows;
-}
-
-/**
- * جلب حجوزات مالك معين (مع دعم الفلاتر)
- */
-async function getOwnerBookings(ownerId, filters) {
-    const { startDate, endDate, fieldId, status } = filters;
-    let query = `
-        SELECT 
-            b.booking_id, b.booking_date, b.start_time, b.end_time, b.status, 
-            b.total_amount, b.deposit_amount, b.deposit_paid,
-            f.name AS pitch_name, f.location,
-            u.name AS player_name, u.phone AS player_phone
-        FROM bookings b
-        JOIN fields f ON b.field_id = f.field_id
-        JOIN users u ON b.player_id = u.user_id
-        WHERE f.owner_id = $1
-    `;
-    const params = [ownerId];
-    let paramIndex = 2;
-
-    if (startDate && endDate) {
-        query += ` AND b.booking_date BETWEEN $${paramIndex++} AND $${paramIndex++}`;
-        params.push(startDate, endDate);
-    }
-    if (fieldId) {
-        query += ` AND b.field_id = $${paramIndex++}`;
-        params.push(fieldId);
-    }
-    if (status) {
-        query += ` AND b.status = $${paramIndex++}`;
-        params.push(status);
-    }
-
-    query += ` ORDER BY b.booking_date DESC, b.start_time DESC`;
+    const values = [name, email, hashedPassword, phone, role];
     
-    const result = await execQuery(query, params);
-    // تأكد من تمرير ID الذي تستخدمه الواجهة الأمامية
-    return result.rows.map(b => ({
-        ...b,
-        id: b.booking_id
-    }));
+    const user = await execQueryOne(query, values);
+    await createActivityLog(user.id, 'USER_REGISTER', `New user registered with role: ${role}`, user.id);
+    return user;
 }
 
 /**
- * جلب إحصائيات مالك الملعب للوحة التحكم
+ * تسجيل دخول المستخدم (Login)
  */
-async function getOwnerDashboardStats(ownerId) {
-    const query = `
-        SELECT 
-            (SELECT COUNT(*) FROM fields WHERE owner_id = $1 AND is_active = TRUE) AS total_fields,
-            (SELECT COUNT(*) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1) AS total_bookings,
-            (SELECT SUM(total_amount) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1 AND b.status = 'played') AS total_revenue_gross,
-            (SELECT SUM(total_amount) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1 AND b.status = 'booked_confirmed' AND b.booking_date >= CURRENT_DATE) AS upcoming_bookings_value,
-            (SELECT COUNT(*) FROM bookings b JOIN fields f ON b.field_id = f.field_id WHERE f.owner_id = $1 AND b.status = 'booked_unconfirmed' AND b.deposit_amount = 0) AS pending_cash_bookings
-    `;
-    const result = await execQuery(query, [ownerId]);
-    return result.rows[0] || {};
+async function loginUser(email, password) {
+    const user = await findUserByEmail(email);
+    if (!user) return null; // المستخدم غير موجود
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (isMatch) {
+        delete user.password; // إزالة كلمة المرور المشفرة من النتيجة
+        await createActivityLog(user.id, 'USER_LOGIN', `User logged in successfully`, user.id);
+        return user;
+    }
+    return null; // كلمة المرور غير صحيحة
 }
 
-module.exports = {
-    // ... (تأكد من تصدير جميع الدوال السابقة)
-    getOwnerStadiums,
-    getOwnerBookings,
-    getOwnerDashboardStats,
-    // ...
-};
-
-// models.js (أضف هذه الدوال في نهاية الملف)
-
 /**
- * جلب إحصائيات لوحة تحكم الأدمن العامة
+ * البحث عن مستخدم جوجل أو إنشاؤه (لـ Passport)
+ * *مطلوب بواسطة server.js*
  */
-async function getAdminDashboardStats() {
-    const query = `
-        SELECT 
-            (SELECT COUNT(*) FROM users) AS total_users,
-            (SELECT COUNT(*) FROM fields WHERE is_active = TRUE) AS total_stadiums,
-            (SELECT COUNT(*) FROM bookings) AS total_bookings,
-            (SELECT SUM(total_amount) FROM bookings WHERE status = 'played') AS total_revenue_gross,
-            (SELECT COUNT(*) FROM users WHERE is_approved = FALSE AND role IN ('owner', 'employee')) AS pending_managers
-    `;
-    const result = await execQuery(query);
-    return result.rows[0] || {};
+async function findOrCreateGoogleUser(data) {
+    const { googleId, name, email } = data;
+    
+    let user = await execQueryOne(`SELECT * FROM users WHERE google_id = $1 OR email = $2;`, [googleId, email]);
+    
+    if (user) {
+        if (!user.google_id && googleId) {
+            user = await execQueryOne(`UPDATE users SET google_id = $1 WHERE id = $2 RETURNING *;`, [googleId, user.id]);
+        }
+        delete user.password;
+        await createActivityLog(user.id, 'SOCIAL_LOGIN', `User logged in via Google`, user.id);
+        return user;
+    } else {
+        const query = `
+            INSERT INTO users (google_id, name, email, role, is_approved)
+            VALUES ($1, $2, $3, 'player', TRUE)
+            RETURNING id, name, email, role, is_approved, created_at;
+        `;
+        const values = [googleId, name, email];
+        const newUser = await execQueryOne(query, values);
+        await createActivityLog(newUser.id, 'SOCIAL_REGISTER', `New user registered via Google`, newUser.id);
+        return newUser;
+    }
 }
 
-/**
- * جلب جميع المستخدمين مع معلومات الدور والموافقة
- */
-async function getAllUsers() {
-    const query = `
-        SELECT user_id, name, email, phone, role, is_approved, created_at
-        FROM users
-        ORDER BY created_at DESC
-    `;
-    const result = await execQuery(query);
-    return result.rows;
-}
+// ---------------------------
+// دوال إدارة الأدوار (Admin/Manager Functions)
+// ---------------------------
 
 /**
- * جلب المستخدمين المنتظرين الموافقة (مالك/موظف)
+ * جلب جميع طلبات مديري الملاعب (Managers) المعلقة
  */
 async function getPendingManagers() {
     const query = `
-        SELECT user_id, name, email, role, created_at
+        SELECT id, name, email, phone, created_at 
+        FROM users 
+        WHERE role = 'manager' AND is_approved = FALSE;
+    `;
+    return execQuery(query);
+}
+
+/**
+ * الموافقة على مدير ملعب (يتم ترقيته إلى 'owner')
+ */
+async function approveManager(manager_id, admin_id) {
+    const user = await execQueryOne(`UPDATE users SET is_approved = TRUE, role = 'owner' WHERE id = $1 RETURNING id, name;`, [manager_id]);
+    if (user) {
+        await createActivityLog(admin_id, 'ADMIN_ACTION', `Approved owner: ${user.name} (${user.id})`, user.id);
+    }
+    return user;
+}
+
+/**
+ * رفض/حظر طلب مدير ملعب معلق
+ */
+async function rejectManager(manager_id, admin_id) {
+    const user = await execQueryOne(`UPDATE users SET role = 'rejected' WHERE id = $1 RETURNING id, name;`, [manager_id]);
+    if (user) {
+        await createActivityLog(admin_id, 'ADMIN_ACTION', `Rejected manager application: ${user.name} (${user.id})`, user.id);
+    }
+    return user;
+}
+
+/**
+ * جلب جميع المستخدمين (للأدمن)
+ */
+async function getAllUsers(role = null) {
+    let query = `
+        SELECT id, name, email, phone, role, is_approved, created_at, avatar_url
         FROM users
-        WHERE is_approved = FALSE AND role IN ('owner', 'employee')
-        ORDER BY created_at ASC
     `;
-    const result = await execQuery(query);
-    return result.rows;
+    const params = [];
+    if (role) {
+        query += ` WHERE role = $1`;
+        params.push(role);
+    }
+    query += ` ORDER BY created_at DESC;`;
+    return execQuery(query, params);
 }
 
-/**
- * تحديث حالة الموافقة للمستخدم
- */
-async function updateApprovalStatus(userId, isApproved, role) {
-    const query = `
-        UPDATE users
-        SET is_approved = $1, role = $2
-        WHERE user_id = $3
-        RETURNING user_id, name, email, is_approved, role
-    `;
-    const result = await execQuery(query, [isApproved, role, userId]);
-    return result.rows[0];
-}
+// =======================================================
+// 🏟️ إدارة الملاعب (Stadiums Management)
+// =======================================================
 
 /**
- * جلب سجلات النشاط (Activity Logs)
+ * دالة مساعدة لحساب متوسط التقييم
  */
-async function getActivityLogs(limit = 20) {
+async function getStadiumAverageRating(stadium_id) {
     const query = `
         SELECT 
-            l.action_id, l.action, l.description, l.created_at, 
-            u.name AS user_name, u.role AS user_role
-        FROM activity_logs l
-        LEFT JOIN users u ON l.user_id = u.user_id
-        ORDER BY l.created_at DESC
-        LIMIT $1
+            AVG(rating)::numeric(10, 2) as average_rating, 
+            COUNT(id) as total_ratings 
+        FROM ratings 
+        WHERE stadium_id = $1;
     `;
-    const result = await execQuery(query, [limit]);
-    return result.rows;
+    return execQueryOne(query, [stadium_id]);
 }
 
 /**
- * جلب جميع الملاعب (لإدارة الأدمن)
+ * جلب جميع الملاعب المتاحة
  */
-async function getAllStadiums() {
-    const query = `
-        SELECT 
-            f.field_id, f.name, f.location, f.price_per_hour, f.is_active,
-            u.name AS owner_name
-        FROM fields f
-        JOIN users u ON f.owner_id = u.user_id
-        ORDER BY f.name ASC
-    `;
-    const result = await execQuery(query);
-    return result.rows;
-}
-
-// ... (تأكد من إضافة الدوال الجديدة في تصدير الدوال)
-module.exports = {
-    // ... (تصدير الدوال السابقة)
-    getAdminDashboardStats,
-    getAllUsers,
-    getPendingManagers,
-    updateApprovalStatus,
-    getActivityLogs,
-    getAllStadiums,
-    // ...
-};
-
-// models.js (إضافات لدوال CRUD للملاعب)
-
-/**
- * دالة مساعدة لجلب معرفات الموظفين المرتبطين بملعب
- */
-async function getAssignedEmployees(fieldId, client) {
-    const query = `
-        SELECT user_id
-        FROM employee_assignments
-        WHERE field_id = $1
-    `;
-    const result = await execQuery(query, [fieldId], client);
-    return result.rows.map(row => row.user_id);
-}
-
-
-/**
- * 1. إنشاء ملعب جديد
- */
-async function createField(ownerId, name, location, pricePerHour, depositAmount, features, client) {
-    const query = `
-        INSERT INTO fields (owner_id, name, location, price_per_hour, deposit_amount, features, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-        RETURNING field_id, name
-    `;
-    const result = await execQuery(query, [ownerId, name, location, pricePerHour, depositAmount, features], client);
-    return result.rows[0];
-}
-
-/**
- * 2. تحديث بيانات ملعب موجود
- */
-async function updateField(fieldId, updates, client) {
-    const fields = [];
-    const values = [];
-    let index = 1;
-
-    for (const key in updates) {
-        if (updates[key] !== undefined) {
-            fields.push(`${key} = $${index++}`);
-            values.push(updates[key]);
-        }
-    }
-
-    if (fields.length === 0) return null;
-
-    values.push(fieldId);
-
-    const query = `
-        UPDATE fields
-        SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-        WHERE field_id = $${index}
-        RETURNING field_id, name
-    `;
-
-    const result = await execQuery(query, values, client);
-    return result.rows[0];
-}
-
-/**
- * 3. حذف (تعطيل) ملعب
- */
-async function deleteField(fieldId, client) {
-    // يفضل التعطيل بدلاً من الحذف لضمان بقاء سجل الحجوزات
-    const query = `
-        UPDATE fields
-        SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-        WHERE field_id = $1
-        RETURNING field_id, name
-    `;
-    const result = await execQuery(query, [fieldId], client);
-    return result.rows[0];
-}
-
-/**
- * 4. تفعيل ملعب
- */
-async function activateField(fieldId, client) {
-    const query = `
-        UPDATE fields
-        SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
-        WHERE field_id = $1
-        RETURNING field_id, name
-    `;
-    const result = await execQuery(query, [fieldId], client);
-    return result.rows[0];
-}
-
-
-// ... (أضف الدوال الجديدة إلى تصدير الدوال)
-module.exports = {
-    // ... (تصدير الدوال السابقة)
-    createField,
-    updateField,
-    deleteField,
-    activateField,
-    getAssignedEmployees,
-    // ...
-};
-
-// models.js (إضافات لدوال الحجز والدفع)
-
-/**
- * جلب تفاصيل الملعب وسعر العربون
- */
-async function getFieldDetailsForBooking(fieldId) {
-    const query = `
-        SELECT field_id, name, price_per_hour, deposit_amount, owner_id
-        FROM fields
-        WHERE field_id = $1 AND is_active = TRUE
-    `;
-    const result = await execQuery(query, [fieldId]);
-    return result.rows[0];
-}
-
-/**
- * جلب حالة فتح الساعة المحددة
- * @returns { 'available' | 'booked_confirmed' | 'booked_unconfirmed' | 'blocked' }
- */
-async function getSlotStatus(fieldId, bookingDate, startTime) {
-    // التحقق من الحجوزات المؤكدة أو المعلقة
-    const query = `
-        SELECT status
-        FROM bookings
-        WHERE field_id = $1 
-        AND booking_date = $2 
-        AND start_time = $3
-        AND status IN ('booked_confirmed', 'booked_unconfirmed')
-    `;
-    const result = await execQuery(query, [fieldId, bookingDate, startTime]);
-    if (result.rows.length > 0) {
-        return result.rows[0].status;
-    }
-    
-    // التحقق من الساعات المحظورة (مغلقة من المالك/الأدمن)
-    const blockQuery = `
-        SELECT *
-        FROM blocked_slots
-        WHERE field_id = $1 
-        AND block_date = $2 
-        AND start_time = $3
-    `;
-    const blockResult = await execQuery(blockQuery, [fieldId, bookingDate, startTime]);
-    if (blockResult.rows.length > 0) {
-        return 'blocked';
-    }
-
-    return 'available';
-}
-
-/**
- * إنشاء حجز جديد (المرحلة الأولى: حجز الساعة)
- */
-async function createNewBooking(userId, fieldId, bookingDate, startTime, endTime, totalAmount, depositAmount, playersNeeded, initialStatus, client) {
-    const query = `
-        INSERT INTO bookings (
-            user_id, field_id, booking_date, start_time, end_time, 
-            total_amount, deposit_amount, players_needed, status
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING booking_id, total_amount, deposit_amount, status
-    `;
-    const result = await execQuery(query, [
-        userId, fieldId, bookingDate, startTime, endTime, 
-        totalAmount, depositAmount, playersNeeded, initialStatus
-    ], client);
-    return result.rows[0];
-}
-
-/**
- * تحديث حالة الحجز بعد الدفع
- */
-async function updateBookingStatus(bookingId, newStatus, paymentReference = null, client) {
-    const query = `
-        UPDATE bookings
-        SET status = $1, 
-            payment_ref = COALESCE($2, payment_ref),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE booking_id = $3
-        RETURNING booking_id, status
-    `;
-    const result = await execQuery(query, [newStatus, paymentReference, bookingId], client);
-    return result.rows[0];
-}
-
-/**
- * جلب معلومات الحجز لصفحة الدفع
- */
-async function getBookingInfoForPayment(bookingId, userId) {
-    const query = `
-        SELECT 
-            b.booking_id, b.booking_date, b.start_time, b.end_time,
-            b.deposit_amount, b.total_amount, b.status,
-            f.name AS field_name, f.location
-        FROM bookings b
-        JOIN fields f ON b.field_id = f.field_id
-        WHERE b.booking_id = $1 AND b.user_id = $2
-    `;
-    const result = await execQuery(query, [bookingId, userId]);
-    return result.rows[0];
-}
-
-// ... (أضف الدوال الجديدة إلى تصدير الدوال)
-module.exports = {
-    // ... (تصدير الدوال السابقة)
-    getFieldDetailsForBooking,
-    getSlotStatus,
-    createNewBooking,
-    updateBookingStatus,
-    getBookingInfoForPayment,
-    // ...
-};
-
-// models.js (إضافات لدوال إدارة الأكواد)
-
-/**
- * دالة مساعدة لجلب الكود بالمعرف (مطلوبة في Booking Request Controller)
- */
-async function getCodeById(codeId, client = null) {
-    const query = `
-        SELECT *
-        FROM discount_codes
-        WHERE code_id = $1
-    `;
-    const result = await execQuery(query, [codeId], client);
-    return result.rows[0];
-}
-
-/**
- * 1. إنشاء كود جديد (Admin Only)
- */
-async function createCode(codeData, client) {
-    const { code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at, created_by } = codeData;
-    const query = `
-        INSERT INTO discount_codes (code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING *
-    `;
-    const result = await execQuery(query, [code_value, code_type, field_id, discount_percent, fixed_amount, max_uses, expires_at, created_by], client);
-    return result.rows[0];
-}
-
-/**
- * 2. جلب جميع الأكواد (Admin Only)
- */
-async function getAllCodes() {
-    const query = `
-        SELECT c.*, f.name AS field_name, u.name AS creator_name
-        FROM discount_codes c
-        LEFT JOIN fields f ON c.field_id = f.field_id
-        LEFT JOIN users u ON c.created_by = u.user_id
-        ORDER BY c.created_at DESC
-    `;
-    const result = await execQuery(query);
-    return result.rows;
-}
-
-/**
- * 3. تحديث حالة الكود (تعطيل/تفعيل) (Admin Only)
- */
-async function updateCodeStatus(codeId, isActive, client) {
-    const query = `
-        UPDATE discount_codes
-        SET is_active = $1, updated_at = CURRENT_TIMESTAMP
-        WHERE code_id = $2
-        RETURNING *
-    `;
-    const result = await execQuery(query, [isActive, codeId], client);
-    return result.rows[0];
-}
-
-/**
- * 4. التحقق من الكود قبل الحجز (Player Flow)
- */
-async function validateCode(codeValue, fieldId = null) {
-    const query = `
-        SELECT *
-        FROM discount_codes
-        WHERE code_value = $1
-          AND is_active = TRUE
-          AND used_count < max_uses
-          AND (expires_at IS NULL OR expires_at > NOW())
-          AND (field_id IS NULL OR field_id = $2)
-    `;
-    const result = await execQuery(query, [codeValue, fieldId]);
-    return result.rows[0];
-}
-
-/**
- * 5. تسجيل استخدام الكود (داخل transaction الحجز)
- */
-async function incrementCodeUsage(codeId, client) {
-    const query = `
-        UPDATE discount_codes
-        SET used_count = used_count + 1
-        WHERE code_id = $1
-    `;
-    await execQuery(query, [codeId], client);
-}
-
-module.exports = {
-    // ... (تصدير الدوال السابقة)
-    getCodeById,
-    createCode,
-    getAllCodes,
-    updateCodeStatus,
-    validateCode,
-    incrementCodeUsage,
-    // ...
-};
-
-// models.js (إضافات لمنطق طلبات اللاعبين والتقييمات)
-
-// ===================================
-// 1. دوال إدارة طلبات اللاعبين (Player Requests)
-// ===================================
-
-/**
- * إنشاء طلب لاعبين إضافيين مرتبط بحجز مؤكد
- */
-async function createPlayerRequest(bookingId, playersNeeded, notes, userId, client) {
-    const query = `
-        INSERT INTO player_requests (booking_id, user_id, players_needed, notes, status)
-        VALUES ($1, $2, $3, $4, 'open')
-        RETURNING *
-    `;
-    const result = await execQuery(query, [bookingId, userId, playersNeeded, notes], client);
-    return result.rows[0];
-}
-
-/**
- * جلب جميع الطلبات النشطة مع تفاصيل الملعب وعدد المشاركين
- */
-async function getAllActivePlayerRequests(filters = {}) {
-    // جلب جميع الطلبات المفتوحة التي لم يكتمل عددها بعد
+async function getStadiums(filters = {}) {
     let query = `
         SELECT 
-            pr.*, 
-            f.name AS field_name, 
-            f.location,
-            b.booking_date,
-            b.start_time,
-            b.end_time,
-            u.name AS booker_name,
-            (
-                SELECT COUNT(*) 
-                FROM request_participants rp 
-                WHERE rp.request_id = pr.request_id
-            ) AS current_participants
-        FROM player_requests pr
-        JOIN bookings b ON pr.booking_id = b.booking_id
-        JOIN fields f ON b.field_id = f.field_id
-        JOIN users u ON pr.user_id = u.user_id
-        WHERE pr.status = 'open' AND b.booking_date >= CURRENT_DATE 
+            s.*, 
+            (SELECT AVG(rating) FROM ratings WHERE stadium_id = s.id)::numeric(10, 2) as average_rating
+        FROM stadiums s 
+        WHERE s.is_active = TRUE
     `;
-    
     const params = [];
     let paramIndex = 1;
-    
-    if (filters.area) {
-        query += ` AND f.area = $${paramIndex++}`;
-        params.push(filters.area);
+
+    if (filters.location) {
+        query += ` AND s.location ILIKE $${paramIndex++}`;
+        params.push(`%${filters.location}%`);
+    }
+
+    if (filters.type) {
+        query += ` AND s.type = $${paramIndex++}`;
+        params.push(filters.type);
     }
     
-    query += ` ORDER BY b.booking_date ASC, b.start_time ASC`;
-
-    const result = await execQuery(query, params);
-    return result.rows;
+    query += ` ORDER BY average_rating DESC NULLS LAST, s.name ASC;`;
+    return execQuery(query, params);
 }
 
 /**
- * انضمام لاعب إلى طلب
+ * جلب ملعب بواسطة المعرف (ID)
  */
-async function joinPlayerRequest(requestId, userId, client) {
-    const query = `
-        INSERT INTO request_participants (request_id, user_id)
-        VALUES ($1, $2)
-        ON CONFLICT (request_id, user_id) DO NOTHING
-        RETURNING *
-    `;
-    const result = await execQuery(query, [requestId, userId], client);
-    return result.rowCount > 0;
-}
-
-/**
- * مغادرة لاعب لطلب
- */
-async function leavePlayerRequest(requestId, userId, client) {
-    const query = `
-        DELETE FROM request_participants 
-        WHERE request_id = $1 AND user_id = $2
-        RETURNING *
-    `;
-    const result = await execQuery(query, [requestId, userId], client);
-    return result.rowCount > 0;
-}
-
-// ===================================
-// 2. دوال نظام التقييمات (Ratings)
-// ===================================
-
-/**
- * التحقق مما إذا كان يمكن للمستخدم تقييم الحجز
- */
-async function canUserRateBooking(bookingId, userId) {
-    const query = `
-        SELECT 
-            b.booking_id, 
-            b.status, 
-            f.field_id,
-            (SELECT COUNT(*) FROM ratings r WHERE r.booking_id = b.booking_id AND r.user_id = $2) AS existing_rating
-        FROM bookings b
-        JOIN fields f ON b.field_id = f.field_id
-        WHERE b.booking_id = $1 AND b.user_id = $2 
-    `;
-    const result = await execQuery(query, [bookingId, userId]);
-    const booking = result.rows[0];
-
-    if (!booking) return { canRate: false, message: "الحجز غير موجود أو ليس لك." };
-    // يتم التقييم فقط للحجوزات التي تم اللعب فيها (يجب أن ينتقل حالة الحجز إلى 'played' من واجهة المالك/الموظف)
-    if (booking.status !== 'played') return { canRate: false, message: "لا يمكن تقييم إلا بعد لعب الساعة." };
-    if (parseInt(booking.existing_rating) > 0) return { canRate: false, message: "لقد قمت بتقييم هذا الحجز مسبقاً." };
-
-    return { canRate: true, fieldId: booking.field_id };
-}
-
-/**
- * تسجيل تقييم جديد للملعب وتحديث المتوسط
- */
-async function submitRating(bookingId, userId, fieldId, rating, comment, client) {
-    const insertQuery = `
-        INSERT INTO ratings (booking_id, user_id, field_id, rating_value, comment)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *
-    `;
-    const ratingResult = await execQuery(insertQuery, [bookingId, userId, fieldId, rating, comment], client);
-    
-    // تحديث متوسط التقييم للملعب
-    const updateFieldRatingQuery = `
-        UPDATE fields
-        SET average_rating = (
-            SELECT AVG(rating_value) 
-            FROM ratings 
-            WHERE field_id = $1
-        )
-        WHERE field_id = $1
-    `;
-    await execQuery(updateFieldRatingQuery, [fieldId], client);
-
-    return ratingResult.rows[0];
-}
-
-// ... (يجب إضافة الدوال الجديدة إلى تصدير الدوال في نهاية models.js)
-
-// models.js (إضافات لنظام الإشعارات)
-
-/**
- * 1. إنشاء إشعار جديد (يتم استدعاؤها من الـ Controllers)
- */
-async function createNotification(userId, type, message, relatedId = null, client = null) {
-    // يجب التأكد من إنشاء جدول notifications في قاعدة البيانات أولاً
-    // (notification_id, user_id, type, message, related_id, is_read, created_at)
-    const query = `
-        INSERT INTO notifications (user_id, type, message, related_id)
-        VALUES ($1, $2, $3, $4)
-        RETURNING *
-    `;
-    await execQuery(query, [userId, type, message, relatedId], client);
-}
-
-/**
- * 2. جلب إشعارات المستخدم (أحدث 20 إشعار)
- */
-async function getNotificationsByUserId(userId, limit = 20) {
-    const query = `
-        SELECT *
-        FROM notifications
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-    `;
-    const result = await execQuery(query, [userId, limit]);
-    return result.rows;
-}
-
-/**
- * 3. جلب عدد الإشعارات غير المقروءة
- */
-async function getUnreadNotificationsCount(userId) {
-    const query = `
-        SELECT COUNT(*)
-        FROM notifications
-        WHERE user_id = $1 AND is_read = FALSE
-    `;
-    const result = await execQueryOne(query, [userId]);
-    return parseInt(result.count || 0);
-}
-
-/**
- * 4. وضع علامة 'مقروء' على جميع الإشعارات
- */
-async function markAllNotificationsAsRead(userId) {
-    const query = `
-        UPDATE notifications
-        SET is_read = TRUE
-        WHERE user_id = $1 AND is_read = FALSE
-        RETURNING notification_id
-    `;
-    const result = await execQuery(query, [userId]);
-    return result.rowCount; // عدد الإشعارات التي تم تحديثها
-}
-
-module.exports = {
-    // ... (تصدير الدوال السابقة)
-    createNotification,
-    getNotificationsByUserId,
-    getUnreadNotificationsCount,
-    markAllNotificationsAsRead,
-    // ...
-};
-
-// models.js (إضافات لمنطق المالك/الموظف)
-
-// ===================================
-// 1. دوال إدارة المالك (Owner/Employee Management)
-// ===================================
-
-/**
- * جلب جميع الملاعب التي يديرها مستخدم معين (مالك أو موظف)
- */
-async function getStadiumsByManagerId(userId) {
-    // يجب أن تكون الدالة قادرة على جلب كل الملاعب المرتبطة به
-    const query = `
-        SELECT f.*
-        FROM fields f
-        JOIN employee_assignments ea ON f.field_id = ea.field_id
-        WHERE ea.user_id = $1
-    `;
-    const result = await execQuery(query, [userId]);
-    return result.rows;
-}
-
-/**
- * جلب الإحصائيات الأساسية للملاعب التي يديرها
- */
-async function getOwnerStats(stadiumIds) {
-    if (stadiumIds.length === 0) return { total_bookings: 0, total_revenue_paid: 0, total_value_of_bookings: 0 };
-    
-    // حساب الإيرادات من الحجوزات المؤكدة والملعوبة
-    const query = `
-        SELECT 
-            COUNT(booking_id) AS total_bookings,
-            COALESCE(SUM(total_amount - remaining_amount), 0) AS total_revenue_paid,
-            COALESCE(SUM(total_amount), 0) AS total_value_of_bookings
-        FROM bookings
-        WHERE field_id = ANY($1::uuid[]) 
-          AND status IN ('booked_confirmed', 'played')
-    `;
-    const result = await execQueryOne(query, [stadiumIds]);
-    return result;
-}
-
-/**
- * جلب جميع الحجوزات للملاعب التي يديرها (مع تفاصيل اللاعب)
- */
-async function getOwnerBookings(stadiumIds) {
-    if (stadiumIds.length === 0) return [];
-    
-    const query = `
-        SELECT 
-            b.booking_id AS id, 
-            b.field_id,
-            b.booking_date, 
-            b.start_time, 
-            b.end_time, 
-            b.status, 
-            b.total_amount,
-            b.deposit_amount,
-            b.remaining_amount,
-            f.name AS field_name, 
-            u.name AS player_name, 
-            u.phone AS player_phone
-        FROM bookings b
-        JOIN fields f ON b.field_id = f.field_id
-        JOIN users u ON b.user_id = u.user_id
-        WHERE b.field_id = ANY($1::uuid[])
-        ORDER BY b.booking_date DESC, b.start_time DESC
-    `;
-    const result = await execQuery(query, [stadiumIds]);
-    return result.rows;
-}
-
-/**
- * تأكيد حجز (يتم استخدامه للحجوزات التي تتطلب موافقة يدوية)
- */
-async function confirmBooking(bookingId, client) {
-    const query = `
-        UPDATE bookings 
-        SET status = 'booked_confirmed' 
-        WHERE booking_id = $1 AND status = 'booked_unconfirmed' AND deposit_amount = 0
-        RETURNING *
-    `;
-    const result = await execQuery(query, [bookingId], client);
-    return result.rows[0];
-}
-
-/**
- * إلغاء حجز وتحديث حالة الملعب
- */
-async function cancelBooking(bookingId, client) {
-    const query = `
-        UPDATE bookings 
-        SET status = 'cancelled' 
-        WHERE booking_id = $1 AND status IN ('booked_confirmed', 'booked_unconfirmed')
-        RETURNING *
-    `;
-    const bookingResult = await execQuery(query, [bookingId], client);
-    const booking = bookingResult.rows[0];
-    
-    if (booking) {
-        // 💡 خطوة حاسمة: إعادة فتح (إتاحة) الساعة الملغاة
-        const updateSlotQuery = `
-            UPDATE field_slots
-            SET status = 'available'
-            WHERE field_id = $1 AND slot_date = $2 AND start_time = $3
-        `;
-        await execQuery(updateSlotQuery, [booking.field_id, booking.booking_date, booking.start_time], client);
+async function getStadiumById(id) {
+    const stadium = await execQueryOne(`SELECT * FROM stadiums WHERE id = $1;`, [id]);
+    if (stadium) {
+        const rating = await getStadiumAverageRating(id);
+        stadium.rating = rating.average_rating;
+        stadium.total_ratings = rating.total_ratings;
     }
-    
-    return booking;
-}
-
-// ... (تأكد من إضافة الدوال الجديدة إلى تصدير الدوال في نهاية models.js)
-
-// models.js (إضافات لمنطق الأدمن)
-
-// ===================================
-// 2. دوال إدارة الأدمن (Admin Management)
-// ===================================
-
-/**
- * جلب إحصائيات لوحة الأدمن العامة
- */
-async function getAdminDashboardStats() {
-    // 1. إجمالي المستخدمين
-    const totalUsers = await execQueryOne(`SELECT COUNT(*) FROM users`);
-
-    // 2. إجمالي الملاعب
-    const totalStadiums = await execQueryOne(`SELECT COUNT(*) FROM fields`);
-
-    // 3. إجمالي الإيرادات والحجوزات (المكتملة والمؤكدة)
-    const bookingStats = await execQueryOne(`
-        SELECT 
-            COUNT(*) AS total_bookings, 
-            COALESCE(SUM(total_amount - remaining_amount), 0) AS total_revenue
-        FROM bookings
-        WHERE status IN ('booked_confirmed', 'played')
-    `);
-
-    // 4. الحسابات بانتظار الموافقة
-    const pendingManagers = await execQueryOne(`
-        SELECT COUNT(*) 
-        FROM users 
-        WHERE is_approved = FALSE AND role IN ('owner', 'employee')
-    `);
-
-    return {
-        totalUsers: parseInt(totalUsers.count || 0),
-        totalStadiums: parseInt(totalStadiums.count || 0),
-        totalBookings: parseInt(bookingStats.total_bookings || 0),
-        totalRevenue: parseFloat(bookingStats.total_revenue || 0),
-        pendingManagers: parseInt(pendingManagers.count || 0)
-    };
+    return stadium;
 }
 
 /**
- * جلب جميع المستخدمين
+ * جلب ملاعب مالك معين (للوحة تحكم المالك)
  */
-async function getAllUsers() {
+async function getOwnerStadiums(owner_id) {
     const query = `
-        SELECT user_id, name, email, phone, role, is_approved, created_at
-        FROM users
-        ORDER BY created_at DESC
+        SELECT id, name, location, price_per_hour, image_url, is_active, created_at 
+        FROM stadiums 
+        WHERE owner_id = $1 
+        ORDER BY created_at DESC;
     `;
-    const result = await execQuery(query);
-    return result.rows;
-}
-
-/**
- * جلب المديرين (Owners/Employees) بانتظار الموافقة
- */
-async function getPendingManagers() {
-    const query = `
-        SELECT user_id, name, email, phone, role, created_at
-        FROM users
-        WHERE is_approved = FALSE AND role IN ('owner', 'employee')
-        ORDER BY created_at ASC
-    `;
-    const result = await execQuery(query);
-    return result.rows;
-}
-
-/**
- * تحديث دور المستخدم أو حالة الموافقة
- */
-async function updateUserManagerStatus(userId, updates, client = null) {
-    const setParts = [];
-    const values = [];
-    let paramIndex = 1;
-
-    // بناء جملة التحديث
-    if (updates.role) {
-        setParts.push(`role = $${paramIndex++}`);
-        values.push(updates.role);
-    }
-    if (updates.isApproved !== undefined) {
-        setParts.push(`is_approved = $${paramIndex++}`);
-        values.push(updates.isApproved);
-    }
-    
-    if (setParts.length === 0) return null;
-
-    values.push(userId);
-    
-    const query = `
-        UPDATE users
-        SET ${setParts.join(', ')}
-        WHERE user_id = $${paramIndex}
-        RETURNING user_id, name, email, role, is_approved
-    `;
-    const result = await execQuery(query, values, client);
-    return result.rows[0];
+    return execQuery(query, [owner_id]);
 }
 
 /**
  * إنشاء ملعب جديد
  */
-async function createStadium(data, client = null) {
-    // ... (منطق إنشاء ملعب - تم إضافته في الخطوة السابقة)
-    // للتذكير: يجب أن يحتوي على منطق لـ INSERT INTO fields
-}
-
-/**
- * حذف ملعب وجميع البيانات المرتبطة به (يجب أن يتم داخل Transaction)
- */
-async function deleteStadium(fieldId, client) {
-    // يتم حذف البيانات المرتبطة أولاً لتجنب مشاكل الـ Foreign Key
-    // ... (منطق حذف البيانات المرتبطة: طلبات اللاعبين، التقييمات، الحجوزات، الساعات، التخصيص)
-    // ...
-    const result = await execQuery(`DELETE FROM fields WHERE field_id = $1 RETURNING field_id`, [fieldId], client);
-    return result.rowCount > 0;
-}
-
-/**
- * إنشاء كود خصم/دفع جديد
- */
-async function createCode(data, client = null) {
-    // ... (منطق إنشاء كود - تم إضافته في الخطوة السابقة)
-    // للتذكير: يجب أن يحتوي على منطق لـ INSERT INTO codes
-}
-
-// ... (تأكد من تصدير جميع الدوال الجديدة في نهاية models.js)
-
-// models.js (دوال الدفع والتأكيد الجديدة)
-
-/**
- * جلب تفاصيل الحجز المطلوبة للدفع
- * (تستخدم في مرحلة بدء الدفع للتأكد من بيانات المستخدم والمبلغ)
- */
-async function getBookingDetailsForPayment(bookingId) {
+async function createStadium(data, user_id) {
+    const { name, location, type, price_per_hour, deposit_amount, image_url, features } = data;
     const query = `
-        SELECT 
-            b.booking_id, b.user_id, b.booking_date, b.start_time, b.deposit_amount, b.status, b.field_id,
-            u.name AS user_name, u.email AS user_email, u.phone AS user_phone,
-            f.name AS field_name
-        FROM bookings b
-        JOIN users u ON b.user_id = u.user_id
-        JOIN fields f ON b.field_id = f.field_id
-        WHERE b.booking_id = $1 AND b.status = 'booked_unconfirmed' AND b.deposit_amount > 0
-    `;
-    const result = await execQueryOne(query, [bookingId]);
-    return result;
-}
-
-/**
- * تحديث الحجز بمعرف معاملة Paymob (قبل التوجيه للدفع)
- */
-async function updateBookingWithPaymobId(bookingId, paymobOrderId) {
-    const query = `
-        UPDATE bookings 
-        SET paymob_order_id = $1
-        WHERE booking_id = $2
-        RETURNING *
-    `;
-    await execQuery(query, [paymobOrderId, bookingId]);
-}
-
-/**
- * تأكيد الدفع وإتمام الحجز (يتم استدعاؤها من الـ Webhook)
- */
-async function finalizeBookingAfterPayment(bookingId, client) {
-    const query = `
-        UPDATE bookings 
-        SET status = 'booked_confirmed', remaining_amount = total_amount - deposit_amount 
-        WHERE booking_id = $1 AND status = 'booked_unconfirmed'
-        RETURNING *
-    `;
-    const result = await execQuery(query, [bookingId], client);
-    return result.rows[0];
-}
-
-// ... (تأكد من تصدير الدوال الجديدة)
-
-// models.js (دوال سجل النشاط)
-
-// ===================================
-// 3. دوال سجل النشاط (Activity Logs)
-// ===================================
-
-/**
- * إنشاء سجل نشاط جديد
- */
-async function createActivityLog(userId, action, description, relatedId = null, client = null) {
-    const query = `
-        INSERT INTO activity_logs (user_id, action, description, related_id)
-        VALUES ($1, $2, $3, $4)
-        RETURNING *
-    `;
-    await execQuery(query, [userId, action, description, relatedId], client);
-}
-
-/**
- * جلب سجلات النشاط (لصفحة الأدمن)
- */
-async function getActivityLogs(limit = 20) {
-    const query = `
-        SELECT 
-            al.action, 
-            al.description, 
-            al.created_at, 
-            u.name AS user_name, 
-            al.related_id
-        FROM activity_logs al
-        LEFT JOIN users u ON al.user_id = u.user_id
-        ORDER BY al.created_at DESC
-        LIMIT $1
-    `;
-    const result = await execQuery(query, [limit]);
-    return result.rows;
-}
-
-// ... (أضف الدوال الجديدة للتصدير في نهاية الملف)
-// module.exports = { ..., createActivityLog, getActivityLogs };
-
-// models.js (دوال التعويض)
-
-// ===================================
-// 4. دوال التعويض (Compensation Codes)
-// ===================================
-
-/**
- * إنشاء كود تعويض جديد للاعب
- */
-async function createCompensationCode(userId, amount, relatedBookingId, client) {
-    // نستخدم UUID لضمان تفرد الكود
-    const codeValue = `COMP-${uuidv4().substring(0, 8).toUpperCase()}`; 
-    
-    const query = `
-        INSERT INTO compensation_codes (user_id, code_value, amount)
-        VALUES ($1, $2, $3)
-        RETURNING code_value, amount
-    `;
-    const result = await execQueryOne(query, [userId, codeValue, amount], client);
-    
-    // تسجيل هذا الحدث في سجل النشاط
-    await createActivityLog(
-        userId, 
-        'COMPENSATION_ISSUED', 
-        `إصدار كود تعويض بقيمة ${amount} لتعويض الحجز الملغي ${relatedBookingId}`, 
-        relatedBookingId, 
-        client
-    );
-
-    return result;
-}
-
-/**
- * التحقق من كود التعويض وجلبه إذا كان صالحاً
- */
-async function getValidCompensationCode(codeValue, userId) {
-    const query = `
-        SELECT *
-        FROM compensation_codes
-        WHERE code_value = $1 
-        AND user_id = $2 
-        AND is_used = FALSE
-    `;
-    return await execQueryOne(query, [codeValue, userId]);
-}
-
-/**
- * استخدام كود التعويض وتحديث حالته
- */
-async function markCompensationCodeAsUsed(codeId, bookingId, client) {
-    const query = `
-        UPDATE compensation_codes
-        SET is_used = TRUE, used_at = CURRENT_TIMESTAMP, used_for_booking_id = $1
-        WHERE code_id = $2
-        RETURNING *
-    `;
-    return await execQueryOne(query, [bookingId, codeId], client);
-}
-
-// ... (أضف الدوال الجديدة للتصدير في نهاية الملف)
-// module.exports = { ..., createCompensationCode, getValidCompensationCode, markCompensationCodeAsUsed };
-
-// models.js (دوال التحديث الآلي الجديدة)
-
-// ===================================
-// 5. دوال التحديث الآلي للحجوزات
-// ===================================
-
-/**
- * دالة مجدولة (Scheduled Job) لتحديث حالة الحجوزات التي فات موعدها
- */
-async function updatePastBookingsStatus() {
-    // 1. تحديث الحجوزات المؤكدة التي انتهت: (booked_confirmed) -> (played)
-    // يتم تحديث الحجوزات المؤكدة التي مر موعد انتهائها إلى "played"
-    // (booking_date + start_time * interval '1 hour' + duration * interval '1 hour') < NOW()
-    const playedQuery = `
-        UPDATE bookings
-        SET status = 'played'
-        WHERE 
-            status = 'booked_confirmed' AND 
-            (booking_date + start_time * interval '1 hour' + duration * interval '1 hour') < NOW()
-        RETURNING booking_id, user_id, field_id
-    `;
-    
-    // 2. تحديث الحجوزات غير المؤكدة التي انتهت: (booked_unconfirmed) -> (missed)
-    // يتم تحديث الحجوزات التي لم يتم دفع عربونها أو تأكيدها يدوياً من المالك ومر موعد انتهائها إلى "missed"
-    const missedQuery = `
-        UPDATE bookings
-        SET status = 'missed'
-        WHERE 
-            status = 'booked_unconfirmed' AND 
-            (booking_date + start_time * interval '1 hour' + duration * interval '1 hour') < NOW()
-        RETURNING booking_id, user_id, field_id
-    `;
-
-    try {
-        const playedResult = await execQuery(playedQuery);
-        const missedResult = await execQuery(missedQuery);
-        
-        // تسجيل النشاط للحجوزات التي تحولت إلى played
-        playedResult.rows.forEach(async (booking) => {
-            // نستخدم user_id الحقيقي لصاحب الحجز
-            await createActivityLog(
-                booking.user_id, 
-                'BOOKING_STATUS_AUTO_PLAYED', 
-                `تم تحديث حالة الحجز ${booking.booking_id} آلياً إلى 'played' لانتهاء موعده.`, 
-                booking.booking_id
-            );
-        });
-
-        // تسجيل النشاط للحجوزات التي تحولت إلى missed
-        missedResult.rows.forEach(async (booking) => {
-            await createActivityLog(
-                booking.user_id, 
-                'BOOKING_STATUS_AUTO_MISSED', 
-                `تم تحديث حالة الحجز ${booking.booking_id} آلياً إلى 'missed' لعدم تأكيده وانتهاء موعده.`, 
-                booking.booking_id
-            );
-            // إرسال إشعار للاعب بأن حجزه انتهى ولم يتم تأكيده
-            await createNotification(
-                booking.user_id, 
-                'BOOKING_MISSED', 
-                `انتهى موعد حجزك ${booking.booking_id} ولم يتم تأكيده من قبل المالك.`, 
-                booking.booking_id
-            );
-        });
-        
-        const totalUpdated = playedResult.rowCount + missedResult.rowCount;
-        return { played: playedResult.rowCount, missed: missedResult.rowCount, total: totalUpdated };
-    } catch (error) {
-        console.error('Error in scheduled job (updatePastBookingsStatus):', error);
-        throw error;
-    }
-}
-
-// ... (تأكد من تصدير الدالة في نهاية models.js)
-
-// models.js (يجب التأكد من استيراد هذه المكتبات في الجزء العلوي)
-const { execQuery, withTransaction, execQueryOne } = require('./db');
-const bcrypt = require('bcrypt'); // لتشفير كلمة المرور
-
-// ===================================
-// 🏟️ إدارة الملاعب (CRUD - DB Logic)
-// ===================================
-
-/**
- * إنشاء ملعب جديد في قاعدة البيانات
- * @param {object} data - بيانات الملعب
- * @param {pg.Client} [client] - كائن العميل للمعاملات
- */
-async function createStadium(data, client) {
-    const { name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type } = data;
-    const query = `
-        INSERT INTO stadiums (name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type)
+        INSERT INTO stadiums (owner_id, name, location, type, price_per_hour, deposit_amount, image_url, features)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *;
     `;
-    const values = [name, location, owner_id, price_per_hour, deposit_amount, image_url, JSON.stringify(features), type];
-    // استخدام client إذا كنا داخل معاملة
-    const dbFunction = client || execQueryOne; 
-    return dbFunction(query, values);
+    const values = [user_id, name, location, type, price_per_hour, deposit_amount, image_url, JSON.stringify(features || [])];
+    
+    const stadium = await execQueryOne(query, values);
+    await createActivityLog(user_id, 'STADIUM_CREATE', `Created new stadium: ${stadium.name}`, stadium.id);
+    return stadium;
 }
 
 /**
- * تحديث بيانات ملعب موجود
+ * تحديث معلومات الملعب
  */
-async function updateStadium(stadiumId, data, client) {
+async function updateStadium(stadium_id, data, user_id) {
     const fields = [];
     const values = [];
-    let paramCount = 1;
+    let paramIndex = 1;
 
     for (const key in data) {
-        if (key !== 'id' && data[key] !== undefined) {
-            // تحويل الـ Features إلى JSON قبل التخزين
-            const value = (key === 'features') ? JSON.stringify(data[key]) : data[key];
-            fields.push(`${key} = $${paramCount++}`);
-            values.push(value);
+        if (data[key] !== undefined && key !== 'id' && key !== 'owner_id' && key !== 'created_at') {
+            if (key === 'features') {
+                 fields.push(`features = $${paramIndex++}`);
+                 values.push(JSON.stringify(data[key]));
+            } else {
+                fields.push(`${key} = $${paramIndex++}`);
+                values.push(data[key]);
+            }
         }
     }
-    values.push(stadiumId); // إضافة الـ ID كآخر قيمة
+    
+    if (fields.length === 0) return getStadiumById(stadium_id);
 
-    if (fields.length === 0) return null;
-
+    values.push(stadium_id);
     const query = `
-        UPDATE stadiums SET ${fields.join(', ')}
-        WHERE id = $${paramCount}
+        UPDATE stadiums 
+        SET ${fields.join(', ')}, created_at = NOW() 
+        WHERE id = $${paramIndex} 
         RETURNING *;
     `;
-    const dbFunction = client || execQueryOne;
-    return dbFunction(query, values);
-}
 
-/**
- * حذف ملعب (عادة يتم عبر معاملة لحذف الحجوزات المرتبطة أيضاً)
- */
-async function deleteStadium(stadiumId, client) {
-    const query = `DELETE FROM stadiums WHERE id = $1 RETURNING id;`;
-    const dbFunction = client || execQueryOne;
-    return dbFunction(query, [stadiumId]);
-}
-
-
-// ===================================
-// 👥 إدارة الملف الشخصي (DB Logic)
-// ===================================
-
-/**
- * جلب بيانات الملف الشخصي للمستخدم
- */
-async function getUserProfile(userId) {
-    const query = `
-        SELECT id, name, email, phone, role, created_at, avatar_url 
-        FROM users 
-        WHERE id = $1;
-    `;
-    return execQueryOne(query, [userId]);
-}
-
-/**
- * تحديث بيانات الملف الشخصي (بما في ذلك كلمة المرور)
- */
-async function updateUserProfile(userId, data, client) {
-    const fields = [];
-    const values = [];
-    let paramCount = 1;
-
-    for (const key in data) {
-        // تشفير كلمة المرور إذا كانت موجودة
-        if (key === 'password' && data[key]) {
-            const hashedPassword = await bcrypt.hash(data[key], 10);
-            fields.push(`password = $${paramCount++}`);
-            values.push(hashedPassword);
-        } else if (key !== 'id' && data[key] !== undefined) {
-            fields.push(`${key} = $${paramCount++}`);
-            values.push(data[key]);
-        }
+    const updatedStadium = await execQueryOne(query, values);
+    if (updatedStadium) {
+        await createActivityLog(user_id, 'STADIUM_UPDATE', `Updated stadium: ${updatedStadium.name}`, updatedStadium.id);
     }
-    values.push(userId); 
+    return updatedStadium;
+}
 
-    if (fields.length === 0) return null;
-
-    const query = `
-        UPDATE users SET ${fields.join(', ')}
-        WHERE id = $${paramCount}
-        RETURNING id, name, email, phone, role, avatar_url;
-    `;
-    const dbFunction = client || execQueryOne;
-    return dbFunction(query, values);
+/**
+ * حذف ملعب
+ */
+async function deleteStadium(stadium_id, user_id) {
+    const stadium = await getStadiumById(stadium_id); 
+    const result = await execQueryOne(`DELETE FROM stadiums WHERE id = $1 RETURNING id;`, [stadium_id]);
+    
+    if (result) {
+        await createActivityLog(user_id, 'STADIUM_DELETE', `Deleted stadium: ${stadium ? stadium.name : stadium_id}`, stadium_id);
+    }
+    return result;
 }
 
 
-// 💡 لا تنسَ تصدير هذه الدوال في نهاية ملف models.js 💡
-module.exports = {
-    // ... (دوالك السابقة)
-    createStadium,
-    updateStadium,
-    deleteStadium,
-    getUserProfile,
-    updateUserProfile,
-};
-
-// models.js - استيراد execQuery و execQueryOne و withTransaction موجود في بداية الملف
-
-// ===================================
-// 📊 التقارير والإحصائيات (Reports Logic)
-// ===================================
+// =======================================================
+// 📅 إدارة الحجوزات (Bookings Management)
+// =======================================================
 
 /**
- * جلب إحصائيات لوحة التحكم الأساسية للأدمن
+ * جلب الفترات الزمنية المحجوزة والمحظورة لملعب وتاريخ معين
  */
-async function getAdminDashboardStats() {
-    // يمكن تجميع استعلامات متعددة في استعلام واحد لتحسين الأداء
-    const query = `
+async function getAvailableSlots(stadium_id, date) {
+    const bookedSlotsQuery = `
+        SELECT start_time, end_time FROM bookings 
+        WHERE stadium_id = $1 AND date = $2 AND status IN ('confirmed', 'pending');
+    `;
+    const blockedSlotsQuery = `
+        SELECT start_time, end_time FROM blocked_slots 
+        WHERE stadium_id = $1 AND date = $2;
+    `;
+    
+    const [bookedSlots, blockedSlots] = await Promise.all([
+        execQuery(bookedSlotsQuery, [stadium_id, date]),
+        execQuery(blockedSlotsQuery, [stadium_id, date])
+    ]);
+    
+    return { bookedSlots, blockedSlots };
+}
+
+/**
+ * إنشاء حجز جديد (يجب أن يتم داخل معاملة - TRANSACTION)
+ */
+async function createBooking(data) {
+    const { user_id, stadium_id, date, start_time, end_time, total_price, deposit_amount, remaining_amount, players_needed, compensation_code_value } = data;
+    
+    // نستخدم withTransaction لضمان atomicity
+    return withTransaction(async (client) => {
+        let actualRemainingAmount = remaining_amount;
+        let finalCompensationCode = null;
+        
+        // 1. معالجة كود التعويض
+        if (compensation_code_value) {
+            const codeResult = await client.query(`
+                SELECT * FROM compensation_codes 
+                WHERE code_value = $1 AND is_used = FALSE AND user_id = $2;
+            `, [compensation_code_value, user_id]);
+            
+            if (codeResult.rows.length === 0) {
+                throw new Error('Compensation code is invalid, used, or not owned by user.');
+            }
+            
+            const compensationAmount = parseFloat(codeResult.rows[0].amount);
+            actualRemainingAmount = Math.max(0, remaining_amount - compensationAmount);
+            finalCompensationCode = compensation_code_value;
+        }
+        
+        // 2. التحقق من تضارب الحجز (Conflict Check)
+        const conflictQuery = `
+            SELECT id FROM bookings 
+            WHERE stadium_id = $1 AND date = $2 
+            AND (start_time < $4 AND end_time > $3) 
+            AND status IN ('confirmed', 'pending');
+        `;
+        const conflict = await client.query(conflictQuery, [stadium_id, date, start_time, end_time]);
+        
+        if (conflict.rows.length > 0) {
+            throw new Error('Time slot is already booked or conflicted.');
+        }
+
+        // 3. إنشاء الحجز
+        const bookingQuery = `
+            INSERT INTO bookings (user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, players_needed, compensation_code, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+            RETURNING *;
+        `;
+        const bookingValues = [
+            user_id, stadium_id, date, start_time, end_time, 
+            total_price, deposit_amount, actualRemainingAmount, 
+            players_needed, finalCompensationCode
+        ];
+        
+        const bookingResult = await client.query(bookingQuery, bookingValues);
+        const newBooking = bookingResult.rows[0];
+        
+        // 4. وضع علامة "مُستخدم" على كود التعويض
+        if (finalCompensationCode) {
+            await client.query(`
+                UPDATE compensation_codes 
+                SET is_used = TRUE, used_at = NOW(), used_for_booking_id = $1 
+                WHERE code_value = $2;
+            `, [newBooking.id, finalCompensationCode]);
+        }
+        
+        // 5. تسجيل النشاط
+        await createActivityLog(user_id, 'BOOKING_CREATE', `Created pending booking #${newBooking.id}`, newBooking.id, client);
+        
+        return newBooking;
+    });
+}
+
+/**
+ * جلب حجوزات مستخدم معين
+ */
+async function getUserBookings(user_id, status = null) {
+    let query = `
         SELECT 
-            (SELECT COUNT(*) FROM users) AS total_users,
-            (SELECT COUNT(*) FROM stadiums) AS total_stadiums,
-            (SELECT COUNT(*) FROM bookings WHERE status = 'confirmed') AS total_confirmed_bookings,
-            (SELECT SUM(deposit_amount) FROM bookings WHERE status = 'confirmed') AS total_revenue;
+            b.*, 
+            s.name as stadium_name, s.location, s.image_url 
+        FROM bookings b
+        JOIN stadiums s ON b.stadium_id = s.id
+        WHERE b.user_id = $1
     `;
-    return execQueryOne(query);
+    const params = [user_id];
+    
+    if (status) {
+        query += ` AND b.status = $2`;
+        params.push(status);
+    }
+    
+    query += ` ORDER BY b.date DESC, b.start_time DESC;`;
+    return execQuery(query, params);
 }
 
-// ===================================
-// ⏰ إدارة الساعات المحظورة (Blocked Slots Logic)
-// ===================================
+/**
+ * جلب حجوزات ملعب معين (للمالك)
+ */
+async function getStadiumBookings(stadium_id, date = null, status = null) {
+    let query = `
+        SELECT 
+            b.id, b.date, b.start_time, b.end_time, b.total_price, b.status, b.players_needed,
+            u.name as user_name, u.phone as user_phone
+        FROM bookings b
+        JOIN users u ON b.user_id = u.id
+        WHERE b.stadium_id = $1
+    `;
+    const params = [stadium_id];
+    let paramIndex = 2;
+
+    if (date) {
+        query += ` AND b.date = $${paramIndex++}`;
+        params.push(date);
+    }
+    
+    if (status) {
+        query += ` AND b.status = $${paramIndex++}`;
+        params.push(status);
+    }
+    
+    query += ` ORDER BY b.date ASC, b.start_time ASC;`;
+    return execQuery(query, params);
+}
 
 /**
- * إضافة ساعة محظورة جديدة (للمدير/المالك)
+ * تأكيد الحجز (بواسطة المالك/المدير)
  */
-async function blockNewSlot(stadium_id, date, start_time, end_time, reason, user_id) {
+async function confirmBooking(booking_id, user_id) {
+    const query = `
+        UPDATE bookings 
+        SET status = 'confirmed'
+        WHERE id = $1 AND status = 'pending'
+        RETURNING *;
+    `;
+    const booking = await execQueryOne(query, [booking_id]);
+    
+    if (booking) {
+        await createActivityLog(user_id, 'BOOKING_CONFIRM', `Confirmed booking #${booking_id}`, booking_id);
+    }
+    return booking;
+}
+
+/**
+ * إلغاء الحجز (بواسطة المالك/اللاعب)
+ */
+async function cancelBooking(booking_id, user_id) {
+    // نستخدم معاملة لضمان إنشاء كود تعويض إذا كان هناك عربون مدفوع
+    return withTransaction(async (client) => {
+        const bookingQuery = `
+            UPDATE bookings 
+            SET status = 'cancelled' 
+            WHERE id = $1 AND status != 'cancelled'
+            RETURNING *;
+        `;
+        const bookingResult = await client.query(bookingQuery, [booking_id]);
+        const booking = bookingResult.rows[0];
+
+        if (!booking) {
+            throw new Error('Booking not found or already cancelled.');
+        }
+
+        // إنشاء كود تعويض بقيمة العربون المدفوع
+        if (booking.deposit_paid > 0) {
+            const newCode = `COMP-${uuidv4().substring(0, 8).toUpperCase()}`;
+            const compensationQuery = `
+                INSERT INTO compensation_codes (code_value, user_id, amount)
+                VALUES ($1, $2, $3)
+                RETURNING code_value;
+            `;
+            await client.query(compensationQuery, [newCode, booking.user_id, booking.deposit_paid]);
+        }
+        
+        await createActivityLog(user_id, 'BOOKING_CANCEL', `Cancelled booking #${booking_id}`, booking_id, client);
+        return booking;
+    });
+}
+
+// =======================================================
+// ⏰ الساعات المحظورة (Blocked Slots)
+// =======================================================
+
+/**
+ * حظر فترة زمنية معينة لملعب
+ */
+async function blockTimeSlot(stadium_id, date, start_time, end_time, reason, user_id) {
     const query = `
         INSERT INTO blocked_slots (stadium_id, date, start_time, end_time, reason, blocked_by_user_id)
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *;
     `;
     const values = [stadium_id, date, start_time, end_time, reason, user_id];
-    return execQueryOne(query, values);
+    
+    const blockedSlot = await execQueryOne(query, values);
+    await createActivityLog(user_id, 'SLOT_BLOCK', `Blocked time slot on ${date} for stadium ${stadium_id}`, blockedSlot.id);
+    return blockedSlot;
 }
 
-// ===================================
+/**
+ * جلب جميع الساعات المحظورة لملعب معين
+ */
+async function getBlockedSlots(stadium_id, date = null) {
+    let query = `SELECT id, date, start_time, end_time, reason FROM blocked_slots WHERE stadium_id = $1`;
+    const params = [stadium_id];
+    if (date) {
+        query += ` AND date = $2`;
+        params.push(date);
+    }
+    query += ` ORDER BY date ASC, start_time ASC;`;
+    return execQuery(query, params);
+}
+
+// =======================================================
 // ⭐ التقييمات والمراجعات (Ratings Logic)
-// ===================================
+// =======================================================
 
 /**
- * إرسال تقييم جديد للملعب
+ * إرسال تقييم جديد للملعب (أو تحديثه)
  */
 async function submitNewRating(stadium_id, user_id, rating, comment) {
     const query = `
@@ -1774,33 +595,194 @@ async function submitNewRating(stadium_id, user_id, rating, comment) {
         RETURNING *;
     `;
     const values = [stadium_id, user_id, rating, comment];
-    return execQueryOne(query, values);
+    
+    const newRating = await execQueryOne(query, values);
+    await createActivityLog(user_id, 'RATING_SUBMIT', `Submitted rating ${rating} for stadium ${stadium_id}`, stadium_id);
+    return newRating;
 }
-
-// ===================================
-// 📜 سجل النشاط (Logs Logic)
-// ===================================
 
 /**
- * جلب آخر سجلات النشاط للنظام (للأدمن)
+ * جلب تقييمات ملعب معين
  */
-async function getSystemActivityLogs(limit = 15) {
+async function getStadiumRatings(stadium_id) {
     const query = `
-        SELECT al.id, al.action, al.description, al.created_at, u.name as user_name
-        FROM activity_logs al
-        LEFT JOIN users u ON al.user_id = u.id
-        ORDER BY al.created_at DESC
-        LIMIT $1;
+        SELECT r.rating, r.comment, r.created_at, u.name as user_name, u.avatar_url
+        FROM ratings r
+        JOIN users u ON r.user_id = u.id
+        WHERE r.stadium_id = $1
+        ORDER BY r.created_at DESC;
     `;
-    return execQuery(query, [limit]);
+    return execQuery(query, [stadium_id]);
+}
+
+// =======================================================
+// 👥 طلبات اللاعبين الإضافيين (Player Requests)
+// =======================================================
+
+/**
+ * إنشاء طلب لاعبين إضافيين جديد
+ */
+async function createPlayerRequest(booking_id, requester_id, players_needed) {
+    const query = `
+        INSERT INTO player_requests (booking_id, requester_id, players_needed, status)
+        VALUES ($1, $2, $3, 'active')
+        RETURNING *;
+    `;
+    const values = [booking_id, requester_id, players_needed];
+    
+    const request = await execQueryOne(query, values);
+    await createActivityLog(requester_id, 'PLAYER_REQUEST_CREATE', `Requested ${players_needed} players for booking ${booking_id}`, request.id);
+    return request;
+}
+
+/**
+ * جلب جميع طلبات اللاعبين النشطة
+ */
+async function getActivePlayerRequests() {
+    const query = `
+        SELECT 
+            pr.*, 
+            s.name as stadium_name, s.location, s.price_per_hour,
+            b.date, b.start_time, b.end_time,
+            u.name as requester_name
+        FROM player_requests pr
+        JOIN bookings b ON pr.booking_id = b.id
+        JOIN stadiums s ON b.stadium_id = s.id
+        JOIN users u ON pr.requester_id = u.id
+        WHERE pr.status = 'active' AND b.date >= CURRENT_DATE
+        ORDER BY b.date ASC, b.start_time ASC;
+    `;
+    return execQuery(query);
+}
+
+/**
+ * الانضمام إلى طلب لاعبين إضافيين
+ */
+async function joinPlayerRequest(request_id, player_id) {
+    const joinQuery = `
+        UPDATE player_requests 
+        SET players_needed = players_needed - 1 
+        WHERE id = $1 AND players_needed > 0
+        RETURNING players_needed;
+    `;
+    const result = await execQueryOne(joinQuery, [request_id]);
+    
+    if (result) {
+        if (result.players_needed === 0) {
+            await execQueryOne(`UPDATE player_requests SET status = 'completed' WHERE id = $1;`, [request_id]);
+        }
+        await createActivityLog(player_id, 'PLAYER_JOIN', `Joined player request #${request_id}. Remaining: ${result.players_needed}`, request_id);
+    } else {
+        throw new Error('Could not join request or request is full/inactive.');
+    }
+    
+    return result;
+}
+
+// =======================================================
+// 🎫 أكواد التعويض (Compensation Codes)
+// =======================================================
+
+/**
+ * إنشاء كود تعويض جديد
+ */
+async function createCompensationCode(user_id, amount) {
+    const newCode = `COMP-${uuidv4().substring(0, 8).toUpperCase()}`;
+    const query = `
+        INSERT INTO compensation_codes (code_value, user_id, amount)
+        VALUES ($1, $2, $3)
+        RETURNING *;
+    `;
+    const code = await execQueryOne(query, [newCode, user_id, amount]);
+    await createActivityLog(user_id, 'COMP_CODE_GENERATE', `Generated compensation code ${newCode} for amount ${amount}`, code.id);
+    return code;
+}
+
+/**
+ * جلب كود تعويض للتحقق من صلاحيته (Validation)
+ */
+async function getValidCompensationCode(code_value, user_id) {
+    const query = `
+        SELECT * FROM compensation_codes 
+        WHERE code_value = $1 AND user_id = $2 AND is_used = FALSE;
+    `;
+    return execQueryOne(query, [code_value, user_id]);
+}
+
+// =======================================================
+// 📊 لوحة القيادة (Admin Dashboard)
+// =======================================================
+
+/**
+ * جلب إحصائيات لوحة القيادة (للأدمن)
+ */
+async function getDashboardStats() {
+    const totalUsers = await execQueryOne(`SELECT COUNT(*) as count FROM users;`);
+    const totalStadiums = await execQueryOne(`SELECT COUNT(*) as count FROM stadiums;`);
+    const totalBookings = await execQueryOne(`SELECT COUNT(*) as count FROM bookings;`);
+    const pendingManagers = await execQueryOne(`SELECT COUNT(*) as count FROM users WHERE role = 'manager' AND is_approved = FALSE;`);
+    
+    return {
+        totalUsers: parseInt(totalUsers.count),
+        totalStadiums: parseInt(totalStadiums.count),
+        totalBookings: parseInt(totalBookings.count),
+        pendingManagers: parseInt(pendingManagers.count),
+    };
 }
 
 
-// 💡 لا تنسَ تحديث تصديراتك في نهاية models.js
+// ===================================
+// 📦 التصدير (Exports)
+// ===================================
+
 module.exports = {
-    // ... (باقي الدوال)
-    getAdminDashboardStats,
-    blockNewSlot,
+    // دوال المستخدمين والمصادقة
+    getUserById,
+    findUserByEmail,
+    registerNewUser,
+    loginUser,
+    findOrCreateGoogleUser,
+    getAllUsers,
+    getPendingManagers,
+    approveManager,
+    rejectManager,
+    
+    // دوال إدارة الملاعب
+    getStadiums,
+    getStadiumById,
+    getOwnerStadiums,
+    getStadiumAverageRating,
+    createStadium,
+    updateStadium,
+    deleteStadium,
+    
+    // دوال الحجوزات
+    getAvailableSlots,
+    createBooking,
+    getUserBookings,
+    getStadiumBookings,
+    confirmBooking,
+    cancelBooking,
+    
+    // دوال الساعات المحظورة
+    blockTimeSlot,
+    getBlockedSlots,
+    
+    // دوال التقييمات
     submitNewRating,
+    getStadiumRatings,
+    
+    // دوال طلبات اللاعبين
+    createPlayerRequest,
+    getActivePlayerRequests,
+    joinPlayerRequest,
+    
+    // دوال أكواد التعويض
+    createCompensationCode,
+    getValidCompensationCode,
+    
+    // دوال الإدارة والتقارير
+    createActivityLog,
     getSystemActivityLogs,
+    getDashboardStats,
 };
