@@ -214,3 +214,54 @@ app.use('/', routes);
 app.listen(PORT, () => {
     // ... (رسائل بدء التشغيل)
 });
+
+// 💡 الإضافة رقم 1: تهيئة Passport.js (للمصادقة الخارجية مثل Google)
+// يجب وضع هذا الجزء بعد تهيئة session مباشرة:
+
+// استخراج منطق serialize/deserialize و Strategy من server.js القديم
+passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "/auth/google/callback"
+}, (accessToken, refreshToken, profile, done) => {
+    // يجب نقل منطق البحث عن المستخدم أو إنشائه هنا
+    // (هذا المنطق يستخدم دوال models.js)
+    // على سبيل المثال: models.findOrCreateUser({ googleId: profile.id, ... }, done);
+    // استخدم (done) لإنهاء المصادقة
+}));
+
+passport.serializeUser((user, done) => { 
+    done(null, user.id); // حفظ مُعرف المستخدم في الجلسة
+});
+
+passport.deserializeUser(async (id, done) => {
+    try {
+        const user = await models.getUserById(id); // استدعاء من models.js
+        done(null, user); 
+    } catch (err) {
+        done(err);
+    }
+});
+
+// يجب أن يتم استدعاء initialize و session بعد app.use(session({...}));
+app.use(passport.initialize());
+app.use(passport.session()); 
+
+
+// 💡 الإضافة رقم 2: خدمة الملفات الثابتة والصور
+// يجب وضع هذا الجزء بعد جميع الـ Middlewares وقبل استيراد routes:
+
+const path = require('path');
+app.use(express.static(path.join(__dirname, 'public')));
+// لخدمة الصور المحملة بواسطة Multer
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images'))); 
+
+
+// 💡 الإضافة رقم 3: بدء السيرفر (في نهاية الملف)
+// هذا هو الكود الذي يبدأ تشغيل الخادم
+app.listen(PORT, () => {
+    logger.info(`✅ Server running on ${APP_URL}`);
+    logger.info(`🔌 PostgreSQL connected successfully`);
+    logger.info(`📧 Email service: ${process.env.EMAIL_HOST ? 'Configured' : 'Mock'}`);
+    // ... (باقي رسائل بدء التشغيل)
+});
