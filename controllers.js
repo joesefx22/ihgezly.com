@@ -2098,6 +2098,45 @@ async function approveManagerController(req, res) {
     }
 }
 
+// controllers.js
+
+async function rejectManagerController(req, res) {
+    const userIdToReject = req.params.userId;
+    const adminId = req.user.id; // ID الأدمن الذي قام بالإجراء
+
+    try {
+        const rejectedUser = await withTransaction(async (client) => {
+            // يتم تحويل المستخدم إلى player مع الموافقة التلقائية لإنهاء حالته المعلقة
+            const user = await models.updateUserManagerStatus(userIdToReject, { role: 'player', isApproved: true }, client); 
+            
+            if (user) {
+                // 💡 إضافة سجل النشاط هنا
+                await models.createActivityLog(
+                    adminId, 
+                    'ADMIN_MANAGER_REJECTED', 
+                    `رفض طلب المدير/الموظف ${user.name} (${user.user_id}) وتحويله إلى لاعب.`, 
+                    user.user_id, 
+                    client
+                );
+                
+                // 💡 إشعار المستخدم (لإعلامه بالرفض)
+                const message = `❌ تم رفض طلب ترقية حسابك. يمكنك الاستمرار في استخدام الحساب كلاعب.`;
+                await models.createNotification(user.user_id, 'ACCOUNT_REJECTED', message, user.user_id, client);
+            }
+            return user;
+        });
+
+        if (rejectedUser) {
+            res.json({ message: "تم رفض الطلب بنجاح وتحويله إلى لاعب.", user: rejectedUser });
+        } else {
+            res.status(404).json({ message: "لم يتم العثور على المستخدم أو تمت معالجته مسبقاً." });
+        }
+    } catch (error) {
+        console.error('rejectManagerController error:', error);
+        res.status(500).json({ message: "فشل في رفض الطلب." });
+    }
+}
+
 async function rejectManagerController(req, res) {
     try {
         // يتم تحويل المستخدم إلى player مع الموافقة التلقائية لإنهاء حالته المعلقة
