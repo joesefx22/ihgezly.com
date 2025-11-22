@@ -1194,3 +1194,53 @@ async function createCode(data, client = null) {
 }
 
 // ... (تأكد من تصدير جميع الدوال الجديدة في نهاية models.js)
+
+// models.js (دوال الدفع والتأكيد الجديدة)
+
+/**
+ * جلب تفاصيل الحجز المطلوبة للدفع
+ * (تستخدم في مرحلة بدء الدفع للتأكد من بيانات المستخدم والمبلغ)
+ */
+async function getBookingDetailsForPayment(bookingId) {
+    const query = `
+        SELECT 
+            b.booking_id, b.user_id, b.booking_date, b.start_time, b.deposit_amount, b.status, b.field_id,
+            u.name AS user_name, u.email AS user_email, u.phone AS user_phone,
+            f.name AS field_name
+        FROM bookings b
+        JOIN users u ON b.user_id = u.user_id
+        JOIN fields f ON b.field_id = f.field_id
+        WHERE b.booking_id = $1 AND b.status = 'booked_unconfirmed' AND b.deposit_amount > 0
+    `;
+    const result = await execQueryOne(query, [bookingId]);
+    return result;
+}
+
+/**
+ * تحديث الحجز بمعرف معاملة Paymob (قبل التوجيه للدفع)
+ */
+async function updateBookingWithPaymobId(bookingId, paymobOrderId) {
+    const query = `
+        UPDATE bookings 
+        SET paymob_order_id = $1
+        WHERE booking_id = $2
+        RETURNING *
+    `;
+    await execQuery(query, [paymobOrderId, bookingId]);
+}
+
+/**
+ * تأكيد الدفع وإتمام الحجز (يتم استدعاؤها من الـ Webhook)
+ */
+async function finalizeBookingAfterPayment(bookingId, client) {
+    const query = `
+        UPDATE bookings 
+        SET status = 'booked_confirmed', remaining_amount = total_amount - deposit_amount 
+        WHERE booking_id = $1 AND status = 'booked_unconfirmed'
+        RETURNING *
+    `;
+    const result = await execQuery(query, [bookingId], client);
+    return result.rows[0];
+}
+
+// ... (تأكد من تصدير الدوال الجديدة)
