@@ -1,3 +1,176 @@
+// models.js - منطق التعامل مع قاعدة البيانات (PostgreSQL)
+
+const { execQuery, execQueryOne, withTransaction } = require('./db');
+const bcrypt = require('bcrypt');
+const { v4: uuidv4 } = require('uuid');
+
+// ===================================
+// 🛠️ دوال مساعدة عامة
+// ===================================
+
+/**
+ * تسجيل نشاط المستخدم/النظام
+ */
+async function createActivityLog(user_id, action, description, entity_id = null, client = null) {
+    const query = `
+        INSERT INTO activity_logs (user_id, action, description, entity_id)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *;
+    `;
+    const values = [user_id, action, description, entity_id];
+    const dbFunction = client ? client.query.bind(client) : execQueryOne;
+    return dbFunction(query, values);
+}
+
+// ===================================
+// 👥 المستخدمون والمصادقة
+// ===================================
+
+async function getUserById(id) {
+    const query = `SELECT id, name, email, phone, role, is_approved, avatar_url FROM users WHERE id = $1;`;
+    return execQueryOne(query, [id]);
+}
+
+async function findUserByEmail(email) {
+    const query = `SELECT * FROM users WHERE email = $1;`;
+    return execQueryOne(query, [email]);
+}
+
+async function registerNewUser(data, client) {
+    const { name, email, password, phone, role } = data;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    // is_approved = TRUE للاعبين، و FALSE للمدراء/المالكين
+    const is_approved = (role === 'player' || role === 'admin'); 
+    
+    const query = `
+        INSERT INTO users (name, email, password, phone, role, is_approved)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, name, email, role, is_approved;
+    `;
+    const values = [name, email, hashedPassword, phone, role, is_approved];
+    const dbFunction = client || execQueryOne;
+    return dbFunction(query, values);
+}
+
+async function findOrCreateGoogleUser(data) {
+    let user = await findUserByEmail(data.email);
+    if (user) return user;
+
+    // إذا لم يكن موجوداً، قم بإنشاء حساب جديد
+    const query = `
+        INSERT INTO users (google_id, name, email, role, is_approved)
+        VALUES ($1, $2, $3, 'player', TRUE)
+        RETURNING id, name, email, role, is_approved;
+    `;
+    const values = [data.googleId, data.name, data.email];
+    return execQueryOne(query, values);
+}
+
+// ... (دوال تحديث الملف الشخصي)
+// ... (دوال إدارة المستخدمين للأدمن)
+
+// ===================================
+// 🏟️ إدارة الملاعب
+// ===================================
+
+async function getStadiumById(id) {
+    const query = `SELECT * FROM stadiums WHERE id = $1;`;
+    return execQueryOne(query, [id]);
+}
+
+async function createStadium(data, client) {
+    const { name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type } = data;
+    const query = `
+        INSERT INTO stadiums (name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *;
+    `;
+    const values = [name, location, owner_id, price_per_hour, deposit_amount, image_url, JSON.stringify(features), type];
+    const dbFunction = client || execQueryOne; 
+    return dbFunction(query, values);
+}
+
+// ... (دوال updateStadium, deleteStadium)
+
+// ===================================
+// 🗓️ إدارة الحجوزات
+// ===================================
+
+async function createNewBooking(data, client) {
+    const { user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, status, payment_id, players_needed } = data;
+    const query = `
+        INSERT INTO bookings (user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, status, payment_id, players_needed)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING *;
+    `;
+    const values = [user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, status, payment_id, players_needed];
+    const dbFunction = client || execQueryOne;
+    return dbFunction(query, values);
+}
+
+async function updateBookingStatus(bookingId, status, client) {
+    const query = `
+        UPDATE bookings SET status = $1, updated_at = NOW() 
+        WHERE id = $2
+        RETURNING *;
+    `;
+    const dbFunction = client || execQueryOne;
+    return dbFunction(query, [status, bookingId]);
+}
+
+// ... (دوال جلب الحجوزات للمستخدم/المالك/الأدمن)
+// ... (دوال إدارة الساعات المحظورة - blockNewSlot)
+
+// ===================================
+// 📊 التقارير والإحصائيات
+// ===================================
+
+async function getAdminDashboardStats() {
+    const query = `
+        SELECT 
+            (SELECT COUNT(*) FROM users) AS total_users,
+            (SELECT COUNT(*) FROM stadiums) AS total_stadiums,
+            (SELECT COUNT(*) FROM bookings WHERE status = 'confirmed') AS total_confirmed_bookings,
+            (SELECT SUM(deposit_paid) FROM bookings WHERE status = 'confirmed') AS total_revenue;
+    `;
+    return execQueryOne(query);
+}
+
+async function getSystemActivityLogs(limit = 15) {
+    const query = `
+        SELECT al.id, al.action, al.description, al.created_at, u.name as user_name
+        FROM activity_logs al
+        LEFT JOIN users u ON al.user_id = u.id
+        ORDER BY al.created_at DESC
+        LIMIT $1;
+    `;
+    return execQuery(query, [limit]);
+}
+
+
+module.exports = {
+    // دوال المصادقة
+    getUserById,
+    findUserByEmail,
+    registerNewUser,
+    findOrCreateGoogleUser,
+
+    // دوال الملاعب
+    getStadiumById,
+    createStadium,
+    // ... (updateStadium, deleteStadium)
+
+    // دوال الحجوزات
+    createNewBooking,
+    updateBookingStatus,
+    // ... (باقي دوال الحجز/الدفع)
+
+    // دوال الإدارة والتقارير
+    getAdminDashboardStats,
+    getSystemActivityLogs,
+    createActivityLog,
+    // ... (باقي دوال التقارير/التقييمات/الحظر)
+};
 // models.js
 const { execQuery } = require('./db');
 
