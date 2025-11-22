@@ -2483,3 +2483,9 @@ const models = require('./models');
 // 💡 استيراد دالة إرسال الإيميل
 const { sendEmail } = require('./emailService'); 
 // ...
+
+// controllers.js (في الجزء العلوي)
+
+// ... (باقي الاستيرادات)
+const { sendEmail } = require('./emailService'); 
+// ...
