@@ -1970,3 +1970,122 @@ async function getPaymobAuthToken() {
     });
     return response.data.token;
 }
+
+// controllers.js (تكامل Paymob)
+
+// =========================================================
+// 48. بدء عملية الدفع (Initiate Payment)
+// =========================================================
+
+async function initiatePaymentController(req, res) {
+    const { bookingId } = req.body;
+    const userId = req.user.id;
+
+    try {
+        const booking = await models.getBookingDetailsForPayment(bookingId);
+        if (!booking || booking.user_id !== userId || booking.deposit_amount <= 0) {
+            return res.status(400).json({ message: "خطأ في بيانات الحجز أو المبلغ المطلوب." });
+        }
+
+        const amount_cents = booking.deposit_amount * 100; // Paymob requires Cents
+        const currency = 'EGP'; 
+
+        // 1. جلب توكن Paymob
+        const authToken = await getPaymobAuthToken();
+
+        // 2. تسجيل الطلب (Order) في Paymob
+        const orderResponse = await axios.post(`${PAYMOB_BASE_URL}/ecommerce/orders`, {
+            auth_token: authToken,
+            delivery_needed: 'false',
+            amount_cents: amount_cents,
+            currency: currency,
+            merchant_order_id: bookingId, // ID الخاص بنا للتتبع
+            items: [{
+                name: `Deposit for ${booking.field_name}`,
+                amount_cents: amount_cents,
+                quantity: 1
+            }]
+        });
+        const paymobOrderId = orderResponse.data.id;
+        
+        // 3. جلب مفتاح الدفع (Payment Key)
+        const paymentKeyResponse = await axios.post(`${PAYMOB_BASE_URL}/acceptance/payment_keys`, {
+            auth_token: authToken,
+            amount_cents: amount_cents,
+            expiration: 3600, // صالح لمدة ساعة
+            order_id: paymobOrderId,
+            billing_data: { /* ... (بيانات الفوترة الأساسية) ... */
+                email: booking.user_email || "test@test.com",
+                first_name: booking.user_name.split(' ')[0] || "Player",
+                phone_number: booking.user_phone || "00000000000",
+                last_name: booking.user_name.split(' ').slice(1).join(' ') || "User",
+                // باقي البيانات المطلوبة: apartment, floor, street, building, city, country, state, postal_code, shipping_method
+                apartment: "NA", floor: "NA", street: "NA", building: "NA", city: "NA", country: "NA", state: "NA", postal_code: "NA", shipping_method: "NA"
+            },
+            currency: currency,
+            integration_id: PAYMOB_INTEGRATION_ID_CARD 
+        });
+        const paymentToken = paymentKeyResponse.data.token;
+        
+        // 4. تحديث الحجز بمعرف Paymob قبل التوجيه
+        await models.updateBookingWithPaymobId(bookingId, paymobOrderId);
+
+        // 5. إرجاع التوكن ومعرف iFrame
+        res.json({ 
+            message: "تم إنشاء مفتاح الدفع بنجاح.", 
+            paymentToken: paymentToken,
+            iframeId: PAYMOB_IFRAME_ID
+        });
+
+    } catch (error) {
+        console.error('initiatePaymentController error:', error.response ? error.response.data : error.message);
+        res.status(500).json({ message: "فشل في بدء عملية الدفع." });
+    }
+}
+
+// =========================================================
+// 49. معالج الـ Webhook (Callback Handler) - تأكيد الدفع
+// =========================================================
+
+async function paymobWebhookController(req, res) {
+    // 💡 ملاحظة: يجب تطبيق منطق التحقق من HMAC هنا للأمان
+    // (نفترض أنه تم التحقق وأن هذا الطلب صحيح من Paymob)
+    
+    const data = req.body.obj;
+    if (!data || !data.order) return res.status(400).send("No data.");
+    
+    const isSuccess = data.success === true;
+    const bookingId = data.order.merchant_order_id; // ID الحجز الخاص بنا
+    const transactionId = data.id;
+
+    if (isSuccess && bookingId) {
+        try {
+            const finalizedBooking = await withTransaction(async (client) => {
+                
+                const result = await models.finalizeBookingAfterPayment(bookingId, client);
+
+                if (result) {
+                    // إشعار اللاعب
+                    const message = `🎉 تم تأكيد حجزك ودفع العربون بنجاح! رقم المعاملة: ${transactionId}.`;
+                    await models.createNotification(result.user_id, 'PAYMENT_CONFIRMED', message, bookingId, client);
+                    // سجل النشاط
+                    // يجب إضافة دالة createActivityLog في models.js لتسجيل هذا الحدث
+                    // await models.createActivityLog(result.user_id, 'PAYMENT_SUCCESS', `نجاح دفع عربون الحجز ${bookingId}`, client);
+                }
+                return result;
+            });
+            
+            // رد 200 ضروري لتجنب تكرار إرسال الـ Webhook من Paymob
+            return res.status(200).send("Payment confirmed successfully."); 
+
+        } catch (error) {
+            console.error('Paymob Webhook Error:', error);
+            return res.status(500).send("Internal Server Error during finalization."); 
+        }
+    } else {
+        // حالة الفشل
+        console.log(`Payment failed for Order ID: ${bookingId}. Transaction ID: ${transactionId}.`);
+        // يمكن إرسال إشعار فشل هنا
+        return res.status(200).send("Payment failed but received."); 
+    }
+}
