@@ -1515,3 +1515,124 @@ async function validateCodeController(req, res) {
         res.status(500).json({ message: "فشل في التحقق من الكود." });
     }
 }
+
+// controllers.js (إضافات لمنطق طلبات اللاعبين والتقييمات)
+
+// ... (تأكد من استيراد الدوال الجديدة من models) ...
+
+// =========================================================
+// 40. Player Requests Controllers (طلب لاعبين إضافيين)
+// =========================================================
+
+// إنشاء طلب لاعبين (بعد حجز مؤكد)
+async function createPlayerRequestController(req, res) {
+    const { bookingId, playersNeeded, notes } = req.body;
+    const userId = req.user.id;
+
+    if (!bookingId || playersNeeded === undefined || playersNeeded <= 0) {
+        return res.status(400).json({ message: "بيانات الطلب غير مكتملة." });
+    }
+    
+    try {
+        const booking = await models.getBookingInfoForPayment(bookingId, userId); 
+        if (!booking || booking.status !== 'booked_confirmed') {
+            return res.status(400).json({ message: "لا يمكن إنشاء طلب لاعبين إلا لحجز مؤكد." });
+        }
+        
+        const request = await withTransaction(async (client) => {
+            // يتم إنشاء الطلب ثم إضافة صاحب الحجز كمشارك تلقائي
+            const newRequest = await models.createPlayerRequest(bookingId, playersNeeded, notes, userId, client);
+            await models.joinPlayerRequest(newRequest.request_id, userId, client);
+            return newRequest;
+        });
+
+        await models.createActivityLog(userId, 'PLAYER_REQUEST_CREATED', `طلب لاعبين للحجز ${bookingId}`);
+        res.status(201).json({ message: "تم نشر طلب اللاعبين بنجاح.", requestId: request.request_id });
+
+    } catch (error) {
+        console.error('createPlayerRequestController error:', error);
+        res.status(500).json({ message: "فشل في إنشاء طلب اللاعبين." });
+    }
+}
+
+// جلب جميع الطلبات النشطة (لصفحة players.html)
+async function getAllPlayerRequestsController(req, res) {
+    const { area } = req.query; 
+    try {
+        const filters = {};
+        if (area) filters.area = area;
+        
+        const requests = await models.getAllActivePlayerRequests(filters);
+        res.json(requests);
+    } catch (error) {
+        console.error('getAllPlayerRequestsController error:', error);
+        res.status(500).json({ message: "فشل في جلب طلبات اللاعبين." });
+    }
+}
+
+// انضمام ومغادرة (تستخدم نفس الـ API مع اختلاف الباراميتر)
+async function togglePlayerRequestController(req, res) {
+    const { requestId, action } = req.params; // action يمكن أن تكون 'join' أو 'leave'
+    const userId = req.user.id;
+
+    if (action !== 'join' && action !== 'leave') {
+        return res.status(400).json({ message: "الإجراء غير صالح." });
+    }
+    
+    try {
+        let result;
+        await withTransaction(async (client) => {
+            if (action === 'join') {
+                result = await models.joinPlayerRequest(requestId, userId, client);
+            } else {
+                result = await models.leavePlayerRequest(requestId, userId, client);
+            }
+        });
+        
+        if (result) {
+            await models.createActivityLog(userId, `PLAYER_REQUEST_${action.toUpperCase()}`, `${action === 'join' ? 'انضم' : 'غادر'} الطلب ${requestId}`);
+            res.json({ message: `تم ${action === 'join' ? 'الانضمام' : 'المغادرة'} إلى الطلب بنجاح.` });
+        } else {
+            res.status(200).json({ message: `تمت معالجة الطلب بنجاح. ${action === 'leave' ? 'لم تكن مشاركاً.' : 'أنت بالفعل مشارك.'}` });
+        }
+    } catch (error) {
+        console.error('togglePlayerRequestController error:', error);
+        res.status(500).json({ message: "فشل في معالجة طلب الانضمام/المغادرة." });
+    }
+}
+
+
+// =========================================================
+// 41. Ratings Controllers (نظام التقييمات)
+// =========================================================
+
+// إرسال تقييم لحجز مكتمل
+async function submitRatingController(req, res) {
+    const { bookingId } = req.params;
+    const { ratingValue, comment } = req.body;
+    const userId = req.user.id;
+
+    if (!ratingValue || ratingValue < 1 || ratingValue > 5) {
+        return res.status(400).json({ message: "قيمة التقييم (1-5) مطلوبة." });
+    }
+    
+    try {
+        const validation = await models.canUserRateBooking(bookingId, userId);
+        if (!validation.canRate) {
+            return res.status(403).json({ message: validation.message });
+        }
+        
+        const newRating = await withTransaction(async (client) => {
+            return models.submitRating(bookingId, userId, validation.fieldId, ratingValue, comment, client);
+        });
+
+        await models.createActivityLog(userId, 'RATING_SUBMITTED', `تقييم الملعب ${validation.fieldId} بـ ${ratingValue} نجوم.`);
+        res.status(201).json({ message: "تم إرسال التقييم بنجاح.", rating: newRating });
+
+    } catch (error) {
+        console.error('submitRatingController error:', error);
+        res.status(500).json({ message: "فشل في إرسال التقييم." });
+    }
+}
+
+// ... (تصدير جميع الدوال في نهاية controllers.js)
