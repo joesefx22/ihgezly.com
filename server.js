@@ -1,3 +1,158 @@
+// server.js - الملف الموحد والمنظم
+
+require('dotenv').config();
+
+/* ============ المكتبات الأساسية ============ */
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const path = require('path');
+const session = require('express-session');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
+const csrf = require('csurf');
+const { execQuery, createTables, healthCheck } = require('./db'); 
+const models = require('./models'); // استيراد دوال الموديل للمصادقة
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
+const isProduction = process.env.NODE_ENV === 'production';
+
+/* ============ 🗄️ إعداد قاعدة البيانات ============ */
+async function initializeDB() {
+    try {
+        await createTables();
+        const check = await healthCheck();
+        console.log(`🔌 PostgreSQL connected: ${check.status} (Version: ${check.version})`);
+    } catch (error) {
+        console.error('❌ FATAL: Failed to connect or create tables:', error.message);
+        process.exit(1);
+    }
+}
+initializeDB();
+
+
+/* ============ 🛡️ إعداد الأمان (Middlewares) ============ */
+
+// 1. CORS
+app.use(cors({
+    origin: APP_URL, // استبدل بـ URL الواجهة الأمامية في الإنتاج
+    credentials: true, // للسماح بتبادل الكوكيز (الضرورية لـ Session/CSRF)
+}));
+
+// 2. Helmet (لحماية الرؤوس)
+app.use(helmet());
+
+// 3. Rate Limiter (لتحديد معدل الطلبات)
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 دقيقة
+    max: 100, // حد 100 طلب لكل IP
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use(limiter);
+
+// 4. Body Parsers
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+
+/* ============ 🍪 إعداد الجلسات والمصادقة (Session & Passport) ============ */
+
+// 5. Session Setup
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'my_super_secret_key',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: isProduction, // استخدم true في الإنتاج مع HTTPS
+        httpOnly: true,
+        maxAge: 7 * 24 * 60 * 60 * 1000 // أسبوع واحد
+    }
+}));
+
+// 6. Passport Initialization
+app.use(passport.initialize());
+app.use(passport.session()); 
+
+// 7. Passport Strategies (Google/Social Login)
+passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "/auth/google/callback"
+}, async (accessToken, refreshToken, profile, done) => {
+    // منطق البحث عن المستخدم أو إنشائه
+    try {
+        const user = await models.findOrCreateGoogleUser({ 
+            googleId: profile.id, 
+            name: profile.displayName,
+            email: profile.emails[0].value 
+        });
+        return done(null, user);
+    } catch (err) {
+        return done(err);
+    }
+}));
+
+passport.serializeUser((user, done) => { done(null, user.id); });
+passport.deserializeUser(async (id, done) => {
+    try {
+        const user = await models.getUserById(id);
+        done(null, user);
+    } catch (err) {
+        done(err);
+    }
+});
+
+
+/* ============ 🔑 إعداد CSRF ============ */
+
+// 8. Cookie Parser و CSRF
+app.use(cookieParser());
+const csrfProtection = csrf({ cookie: true });
+app.use(csrfProtection); // تطبيق CSRF على جميع المسارات (للتطوير لاحقاً)
+
+// تصدير CSRF لاستخدامه كـ Middleware في routes
+module.exports.csrfProtection = (req, res, next) => {
+    // إرسال الرمز في كل استجابة للطلبات غير GET (أو في مسار خاص)
+    if (req.method !== 'GET') {
+        res.locals.csrfToken = req.csrfToken();
+    }
+    next();
+};
+
+/* ============ 🌐 خدمة الملفات الثابتة والـ Routes ============ */
+
+// 9. خدمة الملفات الثابتة (الـ Frontend)
+app.use(express.static(path.join(__dirname, 'public')));
+// خدمة مجلد الصور المحملة (uploads)
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images'))); 
+
+// 10. ربط المسارات
+const routes = require('./routes');
+app.use('/', routes);
+
+// 11. مسار خاص لجلب CSRF Token (للـ Frontend)
+app.get('/api/csrf-token', (req, res) => {
+    res.json({ csrfToken: req.csrfToken() });
+});
+
+// 12. معالجة 404
+app.use((req, res) => {
+    res.status(404).json({ success: false, message: 'الصفحة غير موجودة' });
+});
+
+
+/* ============ 🚀 بدء التشغيل ============ */
+
+app.listen(PORT, () => {
+    console.log(`✅ Server running on ${APP_URL}`);
+    console.log(`🌐 Environment: ${isProduction ? 'Production' : 'Development'}`);
+});
 // server.js (تعديلات بعد تعريف app، وقبل استيراد المسارات)
 
 // ... (تأكد من استيراد المكتبات: helmet, rateLimit, cookieParser, csrf)
