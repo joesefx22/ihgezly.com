@@ -1958,6 +1958,59 @@ async function cancelBookingController(req, res) {
     }
 }
 
+// controllers.js (تعديل cancelBookingController)
+
+async function cancelBookingController(req, res) {
+    const { bookingId } = req.params;
+    const userId = req.user.id; 
+    
+    try {
+        // تأكد أن هذه الدالة تجلب حقل deposit_amount أيضاً
+        const bookingToCancel = await models.getBookingInfoForPayment(bookingId); 
+        if (!bookingToCancel) return res.status(404).json({ message: "الحجز غير موجود." });
+
+        // التحقق الأمني
+        const { ids: stadiumIds } = await getManagedStadiumIds(userId);
+        if (!stadiumIds.includes(bookingToCancel.field_id)) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لإدارة هذا الحجز." });
+        }
+
+        const cancelled = await withTransaction(async (client) => {
+            const result = await models.cancelBooking(bookingId, client);
+            
+            if (result) {
+                // إشعار اللاعب
+                const message = `❌ تم إلغاء حجزك في ${bookingToCancel.field_name}.`;
+                
+                // 💡 منطق التعويض الجديد 💡
+                if (result.deposit_amount > 0 && result.status === 'booked_confirmed') {
+                    // إذا كان هناك عربون مدفوع، نقوم بإصدار كود تعويض
+                    const code = await models.createCompensationCode(result.user_id, result.deposit_amount, bookingId, client);
+                    message += ` تم إصدار كود تعويض لك بقيمة ${code.amount} جنيه: ${code.code_value}. استخدمه في حجزك القادم.`;
+                    await models.createNotification(result.user_id, 'COMPENSATION_ISSUED', message, bookingId, client);
+                } else {
+                    await models.createNotification(result.user_id, 'BOOKING_CANCELLED', message, bookingId, client);
+                }
+                
+                // سجل النشاط
+                await models.createActivityLog(
+                    userId, 
+                    'OWNER_CANCEL_BOOKING', 
+                    `قام المالك/الموظف بإلغاء الحجز ${bookingId} لـ ${bookingToCancel.user_name}`, 
+                    bookingId, 
+                    client
+                );
+            }
+            return result;
+        });
+
+        // ... (باقي الردود)
+
+    } catch (error) {
+        // ...
+    }
+}
+
 async function cancelBookingController(req, res) {
     const { bookingId } = req.params;
     const userId = req.user.id;
