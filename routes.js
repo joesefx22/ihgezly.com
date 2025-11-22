@@ -247,3 +247,37 @@ router.get('/api/payment/callback', paymentCallbackController);
 // Note: يُفضل استخدام POST في الإنتاج، لكن GET أسهل للمحاكاة عبر التوجيه.
 
 // ... (بقية ملف routes.js)
+
+// routes.js (إضافات لمسارات إدارة الأكواد والتحقق)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+const { 
+    // ... (الدوال السابقة)
+    createCodeController,
+    getAllCodesController,
+    toggleCodeStatusController,
+    validateCodeController, // الجديدة
+    // ...
+} = require('./controllers');
+
+// -------------------------------------
+// مسارات إدارة الأكواد (Codes) - للأدمن فقط
+// -------------------------------------
+
+// 1. إنشاء كود جديد
+router.post('/api/admin/codes', verifyToken, checkRole(['admin']), createCodeController);
+
+// 2. جلب جميع الأكواد
+router.get('/api/admin/codes', verifyToken, checkRole(['admin']), getAllCodesController);
+
+// 3. تعطيل/تفعيل كود
+router.put('/api/admin/codes/:codeId/status', verifyToken, checkRole(['admin']), toggleCodeStatusController);
+
+// -------------------------------------
+// مسارات استخدام الأكواد (Player Flow)
+// -------------------------------------
+
+// 4. التحقق من صحة الكود قبل الحجز
+router.post('/api/codes/validate', verifyToken, checkRole(['player']), validateCodeController);
+
+// ... (بقية ملف routes.js)
