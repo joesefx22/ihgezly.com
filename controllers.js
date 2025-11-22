@@ -2089,3 +2089,21 @@ async function paymobWebhookController(req, res) {
         return res.status(200).send("Payment failed but received."); 
     }
 }
+
+// controllers.js (إضافة متحكم جلب السجل)
+
+// =========================================================
+// 50. Activity Logs Controller
+// =========================================================
+
+async function loadActivityLogsController(req, res) {
+    // يمكن تمرير الـ limit من الواجهة الأمامية
+    const limit = req.query.limit ? parseInt(req.query.limit) : 20; 
+    try {
+        const logs = await models.getActivityLogs(limit);
+        res.json(logs);
+    } catch (error) {
+        console.error('loadActivityLogsController error:', error);
+        res.status(500).json({ message: "فشل في جلب سجل النشاط." });
+    }
+}
