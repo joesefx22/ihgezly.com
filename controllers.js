@@ -1952,3 +1952,21 @@ async function deleteStadiumController(req, res) {
 }
 
 // ... (تأكد من إضافة متحكمات updateStadiumController و createCodeController)
+
+// controllers.js (في البداية)
+const axios = require('axios'); // تأكد من تثبيت axios
+const config = require('./config'); // لاستخدام PAYMOB_KEY
+
+const PAYMOB_BASE_URL = 'https://accept.paymob.com/api';
+const PAYMOB_API_KEY = config.paymentProviderKey; // PAYMOB_KEY (من ملف config.js)
+// يجب أن تكون هذه المتغيرات موجودة في ملف .env
+const PAYMOB_INTEGRATION_ID_CARD = process.env.PAYMOB_INTEGRATION_ID_CARD;
+const PAYMOB_IFRAME_ID = process.env.PAYMOB_IFRAME_ID;
+
+// دالة مساعدة لجلب توكن المصادقة من Paymob
+async function getPaymobAuthToken() {
+    const response = await axios.post(`${PAYMOB_BASE_URL}/auth/tokens`, {
+        api_key: PAYMOB_API_KEY
+    });
+    return response.data.token;
+}
