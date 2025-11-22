@@ -1824,6 +1824,52 @@ async function loadOwnerBookingsController(req, res) {
 }
 
 // تأكيد حجز (بدون عربون)
+// controllers.js
+
+async function confirmBookingController(req, res) {
+    const { bookingId } = req.params;
+    const userId = req.user.id; // ID المالك/الموظف الذي قام بالإجراء
+    
+    try {
+        const bookingToConfirm = await models.getBookingInfoForPayment(bookingId);
+        if (!bookingToConfirm) return res.status(404).json({ message: "الحجز غير موجود." });
+
+        // التحقق الأمني: التأكد من أن المالك يدير هذا الملعب
+        const { ids: stadiumIds } = await getManagedStadiumIds(userId);
+        if (!stadiumIds.includes(bookingToConfirm.field_id)) {
+            return res.status(403).json({ message: "ليس لديك صلاحية لإدارة هذا الحجز." });
+        }
+        
+        const confirmed = await withTransaction(async (client) => {
+            const result = await models.confirmBooking(bookingId, client);
+            if (result) {
+                // إشعار اللاعب
+                const message = `🎉 تم تأكيد حجزك في ${bookingToConfirm.field_name}.`;
+                await models.createNotification(result.user_id, 'BOOKING_CONFIRMED', message, bookingId, client);
+                
+                // 💡 إضافة سجل النشاط هنا
+                await models.createActivityLog(
+                    userId, 
+                    'OWNER_CONFIRM_BOOKING', 
+                    `قام المالك/الموظف بتأكيد الحجز اليدوي ${bookingId} لـ ${bookingToConfirm.user_name}`, 
+                    bookingId, 
+                    client
+                );
+            }
+            return result;
+        });
+
+        if (confirmed) {
+            res.json({ message: "تم تأكيد الحجز بنجاح.", booking: confirmed });
+        } else {
+             res.status(400).json({ message: "فشل التأكيد، ربما الحجز مدفوع أو مؤكد مسبقاً." });
+        }
+    } catch (error) {
+        console.error('confirmBookingController error:', error);
+        res.status(500).json({ message: "فشل في تأكيد الحجز." });
+    }
+}
+
 async function confirmBookingController(req, res) {
     const { bookingId } = req.params;
     const userId = req.user.id;
