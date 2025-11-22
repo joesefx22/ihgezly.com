@@ -379,3 +379,34 @@ router.post('/api/owner/bookings/:bookingId/confirm', verifyToken, checkRole(OWN
 
 // 5. إلغاء حجز
 router.post('/api/owner/bookings/:bookingId/cancel', verifyToken, checkRole(OWNER_ROLES), cancelBookingController);
+
+// routes.js (إضافات لمسارات الأدمن)
+
+// ... (تأكد من استيراد الدوال الجديدة) ...
+
+// -------------------------------------
+// مسارات الأدمن (Admin)
+// -------------------------------------
+
+const ADMIN_ROLES = ['admin'];
+
+// 1. الإحصائيات العامة
+router.get('/api/admin/dashboard/stats', verifyToken, checkRole(ADMIN_ROLES), loadAdminDashboardStatsController);
+
+
+// 2. إدارة الملاعب (CRUD)
+router.post('/api/admin/stadiums', verifyToken, checkRole(ADMIN_ROLES), createStadiumController); // إنشاء
+router.put('/api/admin/stadiums/:fieldId', verifyToken, checkRole(ADMIN_ROLES), updateStadiumController); // تحديث
+router.delete('/api/admin/stadiums/:fieldId', verifyToken, checkRole(ADMIN_ROLES), deleteStadiumController); // حذف
+
+// 3. إدارة المستخدمين (Users)
+router.get('/api/admin/users', verifyToken, checkRole(ADMIN_ROLES), loadAllUsersController);
+router.put('/api/admin/users/:userId/role', verifyToken, checkRole(ADMIN_ROLES), updateUserRoleController); // تحديث الدور
+
+// 4. إدارة المديرين بانتظار الموافقة (Pending Managers)
+router.get('/api/admin/users/pending', verifyToken, checkRole(ADMIN_ROLES), loadPendingManagersController);
+router.post('/api/admin/users/:userId/approve', verifyToken, checkRole(ADMIN_ROLES), approveManagerController);
+router.post('/api/admin/users/:userId/reject', verifyToken, checkRole(ADMIN_ROLES), rejectManagerController);
+
+// 5. إدارة الأكواد (Codes)
+router.post('/api/admin/codes', verifyToken, checkRole(ADMIN_ROLES), createCodeController);
