@@ -952,3 +952,116 @@ module.exports = {
     markAllNotificationsAsRead,
     // ...
 };
+
+// models.js (إضافات لمنطق المالك/الموظف)
+
+// ===================================
+// 1. دوال إدارة المالك (Owner/Employee Management)
+// ===================================
+
+/**
+ * جلب جميع الملاعب التي يديرها مستخدم معين (مالك أو موظف)
+ */
+async function getStadiumsByManagerId(userId) {
+    // يجب أن تكون الدالة قادرة على جلب كل الملاعب المرتبطة به
+    const query = `
+        SELECT f.*
+        FROM fields f
+        JOIN employee_assignments ea ON f.field_id = ea.field_id
+        WHERE ea.user_id = $1
+    `;
+    const result = await execQuery(query, [userId]);
+    return result.rows;
+}
+
+/**
+ * جلب الإحصائيات الأساسية للملاعب التي يديرها
+ */
+async function getOwnerStats(stadiumIds) {
+    if (stadiumIds.length === 0) return { total_bookings: 0, total_revenue_paid: 0, total_value_of_bookings: 0 };
+    
+    // حساب الإيرادات من الحجوزات المؤكدة والملعوبة
+    const query = `
+        SELECT 
+            COUNT(booking_id) AS total_bookings,
+            COALESCE(SUM(total_amount - remaining_amount), 0) AS total_revenue_paid,
+            COALESCE(SUM(total_amount), 0) AS total_value_of_bookings
+        FROM bookings
+        WHERE field_id = ANY($1::uuid[]) 
+          AND status IN ('booked_confirmed', 'played')
+    `;
+    const result = await execQueryOne(query, [stadiumIds]);
+    return result;
+}
+
+/**
+ * جلب جميع الحجوزات للملاعب التي يديرها (مع تفاصيل اللاعب)
+ */
+async function getOwnerBookings(stadiumIds) {
+    if (stadiumIds.length === 0) return [];
+    
+    const query = `
+        SELECT 
+            b.booking_id AS id, 
+            b.field_id,
+            b.booking_date, 
+            b.start_time, 
+            b.end_time, 
+            b.status, 
+            b.total_amount,
+            b.deposit_amount,
+            b.remaining_amount,
+            f.name AS field_name, 
+            u.name AS player_name, 
+            u.phone AS player_phone
+        FROM bookings b
+        JOIN fields f ON b.field_id = f.field_id
+        JOIN users u ON b.user_id = u.user_id
+        WHERE b.field_id = ANY($1::uuid[])
+        ORDER BY b.booking_date DESC, b.start_time DESC
+    `;
+    const result = await execQuery(query, [stadiumIds]);
+    return result.rows;
+}
+
+/**
+ * تأكيد حجز (يتم استخدامه للحجوزات التي تتطلب موافقة يدوية)
+ */
+async function confirmBooking(bookingId, client) {
+    const query = `
+        UPDATE bookings 
+        SET status = 'booked_confirmed' 
+        WHERE booking_id = $1 AND status = 'booked_unconfirmed' AND deposit_amount = 0
+        RETURNING *
+    `;
+    const result = await execQuery(query, [bookingId], client);
+    return result.rows[0];
+}
+
+/**
+ * إلغاء حجز وتحديث حالة الملعب
+ */
+async function cancelBooking(bookingId, client) {
+    const query = `
+        UPDATE bookings 
+        SET status = 'cancelled' 
+        WHERE booking_id = $1 AND status IN ('booked_confirmed', 'booked_unconfirmed')
+        RETURNING *
+    `;
+    const bookingResult = await execQuery(query, [bookingId], client);
+    const booking = bookingResult.rows[0];
+    
+    if (booking) {
+        // 💡 خطوة حاسمة: إعادة فتح (إتاحة) الساعة الملغاة
+        const updateSlotQuery = `
+            UPDATE field_slots
+            SET status = 'available'
+            WHERE field_id = $1 AND slot_date = $2 AND start_time = $3
+        `;
+        await execQuery(updateSlotQuery, [booking.field_id, booking.booking_date, booking.start_time], client);
+    }
+    
+    return booking;
+}
+
+// ... (تأكد من إضافة الدوال الجديدة إلى تصدير الدوال في نهاية models.js)
