@@ -1855,3 +1855,100 @@ async function cancelBookingController(req, res) {
 }
 
 // ... (تصدير جميع الدوال في نهاية controllers.js)
+
+// controllers.js (إضافات لمنطق الأدمن)
+
+// =========================================================
+// 45. Admin Dashboard Controllers
+// =========================================================
+
+async function loadAdminDashboardStatsController(req, res) {
+    try {
+        const stats = await models.getAdminDashboardStats();
+        res.json(stats);
+    } catch (error) {
+        // ...
+    }
+}
+
+// =========================================================
+// 46. Admin User Management Controllers
+// =========================================================
+
+async function loadAllUsersController(req, res) {
+    try {
+        const users = await models.getAllUsers();
+        res.json(users);
+    } catch (error) {
+        // ...
+    }
+}
+
+async function loadPendingManagersController(req, res) {
+    try {
+        const managers = await models.getPendingManagers();
+        res.json(managers);
+    } catch (error) {
+        // ...
+    }
+}
+
+async function updateUserRoleController(req, res) {
+    // ... منطق التحقق من newRole
+    try {
+        const updatedUser = await models.updateUserManagerStatus(req.params.userId, { role: req.body.newRole });
+        // ... إضافة سجل نشاط (Activity Log)
+        res.json({ message: "تم تحديث الدور بنجاح.", user: updatedUser });
+    } catch (error) {
+        // ...
+    }
+}
+
+async function approveManagerController(req, res) {
+    try {
+        const approvedUser = await models.updateUserManagerStatus(req.params.userId, { isApproved: true });
+        // ... إشعار المستخدم + سجل نشاط
+        res.json({ message: "تمت الموافقة على المدير بنجاح.", user: approvedUser });
+    } catch (error) {
+        // ...
+    }
+}
+
+async function rejectManagerController(req, res) {
+    try {
+        // يتم تحويل المستخدم إلى player مع الموافقة التلقائية لإنهاء حالته المعلقة
+        const rejectedUser = await models.updateUserManagerStatus(req.params.userId, { role: 'player', isApproved: true });
+        // ... إشعار المستخدم + سجل نشاط
+        res.json({ message: "تم رفض الطلب بنجاح وتحويله إلى لاعب.", user: rejectedUser });
+    } catch (error) {
+        // ...
+    }
+}
+
+// =========================================================
+// 47. Admin Stadium Management Controllers (CRUD)
+// =========================================================
+
+async function createStadiumController(req, res) {
+    // ... منطق التحقق من البيانات
+    try {
+        const newStadium = await models.createStadium(req.body);
+        // ... سجل نشاط
+        res.status(201).json({ message: "تم إنشاء الملعب بنجاح.", stadium: newStadium });
+    } catch (error) {
+        // ...
+    }
+}
+
+async function deleteStadiumController(req, res) {
+    try {
+        const deleted = await withTransaction(async (client) => {
+             // ... استدعاء models.deleteStadium(fieldId, client)
+        });
+        res.json({ message: "تم حذف الملعب وجميع البيانات المرتبطة بنجاح." });
+    } catch (error) {
+        // ...
+    }
+}
+
+// ... (تأكد من إضافة متحكمات updateStadiumController و createCodeController)
