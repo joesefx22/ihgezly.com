@@ -1422,3 +1422,127 @@ async function updatePastBookingsStatus() {
 }
 
 // ... (تأكد من تصدير الدالة في نهاية models.js)
+
+// models.js (يجب التأكد من استيراد هذه المكتبات في الجزء العلوي)
+const { execQuery, withTransaction, execQueryOne } = require('./db');
+const bcrypt = require('bcrypt'); // لتشفير كلمة المرور
+
+// ===================================
+// 🏟️ إدارة الملاعب (CRUD - DB Logic)
+// ===================================
+
+/**
+ * إنشاء ملعب جديد في قاعدة البيانات
+ * @param {object} data - بيانات الملعب
+ * @param {pg.Client} [client] - كائن العميل للمعاملات
+ */
+async function createStadium(data, client) {
+    const { name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type } = data;
+    const query = `
+        INSERT INTO stadiums (name, location, owner_id, price_per_hour, deposit_amount, image_url, features, type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *;
+    `;
+    const values = [name, location, owner_id, price_per_hour, deposit_amount, image_url, JSON.stringify(features), type];
+    // استخدام client إذا كنا داخل معاملة
+    const dbFunction = client || execQueryOne; 
+    return dbFunction(query, values);
+}
+
+/**
+ * تحديث بيانات ملعب موجود
+ */
+async function updateStadium(stadiumId, data, client) {
+    const fields = [];
+    const values = [];
+    let paramCount = 1;
+
+    for (const key in data) {
+        if (key !== 'id' && data[key] !== undefined) {
+            // تحويل الـ Features إلى JSON قبل التخزين
+            const value = (key === 'features') ? JSON.stringify(data[key]) : data[key];
+            fields.push(`${key} = $${paramCount++}`);
+            values.push(value);
+        }
+    }
+    values.push(stadiumId); // إضافة الـ ID كآخر قيمة
+
+    if (fields.length === 0) return null;
+
+    const query = `
+        UPDATE stadiums SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+        RETURNING *;
+    `;
+    const dbFunction = client || execQueryOne;
+    return dbFunction(query, values);
+}
+
+/**
+ * حذف ملعب (عادة يتم عبر معاملة لحذف الحجوزات المرتبطة أيضاً)
+ */
+async function deleteStadium(stadiumId, client) {
+    const query = `DELETE FROM stadiums WHERE id = $1 RETURNING id;`;
+    const dbFunction = client || execQueryOne;
+    return dbFunction(query, [stadiumId]);
+}
+
+
+// ===================================
+// 👥 إدارة الملف الشخصي (DB Logic)
+// ===================================
+
+/**
+ * جلب بيانات الملف الشخصي للمستخدم
+ */
+async function getUserProfile(userId) {
+    const query = `
+        SELECT id, name, email, phone, role, created_at, avatar_url 
+        FROM users 
+        WHERE id = $1;
+    `;
+    return execQueryOne(query, [userId]);
+}
+
+/**
+ * تحديث بيانات الملف الشخصي (بما في ذلك كلمة المرور)
+ */
+async function updateUserProfile(userId, data, client) {
+    const fields = [];
+    const values = [];
+    let paramCount = 1;
+
+    for (const key in data) {
+        // تشفير كلمة المرور إذا كانت موجودة
+        if (key === 'password' && data[key]) {
+            const hashedPassword = await bcrypt.hash(data[key], 10);
+            fields.push(`password = $${paramCount++}`);
+            values.push(hashedPassword);
+        } else if (key !== 'id' && data[key] !== undefined) {
+            fields.push(`${key} = $${paramCount++}`);
+            values.push(data[key]);
+        }
+    }
+    values.push(userId); 
+
+    if (fields.length === 0) return null;
+
+    const query = `
+        UPDATE users SET ${fields.join(', ')}
+        WHERE id = $${paramCount}
+        RETURNING id, name, email, phone, role, avatar_url;
+    `;
+    const dbFunction = client || execQueryOne;
+    return dbFunction(query, values);
+}
+
+
+// 💡 لا تنسَ تصدير هذه الدوال في نهاية ملف models.js 💡
+module.exports = {
+    // ... (دوالك السابقة)
+    createStadium,
+    updateStadium,
+    deleteStadium,
+    getUserProfile,
+    updateUserProfile,
+};
