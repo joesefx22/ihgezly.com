@@ -2476,3 +2476,10 @@ async function validateCompensationCodeController(req, res) {
         res.status(500).json({ message: "فشل في التحقق من الكود." });
     }
 }
+
+// controllers.js (في الجزء العلوي مع باقي الاستيرادات)
+
+const models = require('./models');
+// 💡 استيراد دالة إرسال الإيميل
+const { sendEmail } = require('./emailService'); 
+// ...
