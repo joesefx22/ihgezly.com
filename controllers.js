@@ -212,6 +212,64 @@ async function getAvailableSlotsController(req, res) {
 // -------------------------------------
 // 9. إنشاء حجز جديد (العملية الحاسمة)
 // -------------------------------------
+// controllers.js (تعديل createBookingController - افتراضي)
+
+async function createBookingController(req, res) {
+    const userId = req.user.id;
+    const { 
+        fieldId, 
+        slotIds, 
+        // 💡 إضافة كود التعويض هنا
+        compensationCode 
+    } = req.body; 
+
+    // ... (الكود السابق لجلب بيانات الساعات وحساب المبالغ)
+
+    try {
+        const newBooking = await withTransaction(async (client) => {
+            // ... (التحقق من التوفر وحساب deposit_amount, total_amount)
+
+            let finalDeposit = calculatedDepositAmount;
+            let codeUsed = null;
+
+            // 💡 1. تطبيق كود التعويض 💡
+            if (compensationCode) {
+                const code = await models.getValidCompensationCode(compensationCode, userId);
+                if (code) {
+                    finalDeposit = Math.max(0, calculatedDepositAmount - code.amount);
+                    codeUsed = code;
+                } else {
+                    // إذا كان الكود غير صالح
+                    throw new Error("Compensation code is invalid or already used.");
+                }
+            }
+
+            // ... (الكود السابق لإنشاء الحجز)
+            // يجب تحديث الدالة models.createBooking لتقبل finalDeposit
+
+            // 💡 2. تحديث الكود كـ "مُستخدم" 💡
+            if (codeUsed) {
+                await models.markCompensationCodeAsUsed(codeUsed.code_id, newBooking.booking_id, client);
+                // سجل النشاط لاستخدام الكود
+                await models.createActivityLog(
+                    userId, 
+                    'COMPENSATION_USED', 
+                    `استخدام كود التعويض ${codeUsed.code_value} في الحجز ${newBooking.booking_id}`, 
+                    newBooking.booking_id, 
+                    client
+                );
+            }
+
+            // ... (باقي المنطق)
+            return newBooking; 
+        });
+        
+        // ... (الرد على المستخدم)
+    } catch (error) {
+        // ...
+    }
+}
+
 async function createBookingController(req, res) {
     const playerId = req.user.id;
     const { field_id, booking_date, start_time, end_time, duration_hours } = req.body; 
