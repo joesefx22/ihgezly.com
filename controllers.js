@@ -1115,6 +1115,32 @@ async function mockPaymobPaymentIntent(bookingId, amount, customerInfo) {
 
 // controllers.js (تعديل دالة bookingRequestController)
 
+// ... (داخل دالة bookingRequestController وقبل return newBooking) ...
+
+// 💡 إنشاء الإشعار بناءً على حالة الحجز النهائية
+let notificationMessage;
+let notificationType;
+
+if (depositAmount > 0 && initialStatus === 'booked_unconfirmed') {
+    notificationMessage = `تم حجز الساعة! يرجى دفع العربون (${depositAmount} ج.م) لتأكيد حجزك في ${field.name}.`;
+    notificationType = 'DEPOSIT_REQUIRED';
+} else if (initialStatus === 'booked_confirmed') {
+    notificationMessage = `🎉 تم تأكيد حجزك في ${field.name} بتاريخ ${bookingDate} (${startTime}).`;
+    notificationType = 'BOOKING_CONFIRMED';
+} else if (initialStatus === 'pending_owner_approval') {
+    notificationMessage = `⏳ تم تسجيل طلب حجزك في ${field.name}. ننتظر موافقة المالك لتأكيده.`;
+    notificationType = 'BOOKING_PENDING';
+}
+
+// إنشاء الإشعار للاعب
+if (notificationMessage) {
+    await models.createNotification(userId, notificationType, notificationMessage, newBooking.booking_id, client);
+}
+
+return newBooking; 
+// ...
+// controllers.js (تعديل دالة bookingRequestController)
+
 async function bookingRequestController(req, res) {
     // ... (جلب المتغيرات السابقة)
     // إضافة codeId لبيانات الـ body
