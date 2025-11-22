@@ -1,3 +1,50 @@
+// server.js (إضافة دالة التشغيل المجدولة)
+
+// ... (تأكد من استيراد models)
+const models = require('./models'); 
+// ...
+
+// دالة التشغيل المجدولة
+function startScheduledJobs() {
+    // تشغيل الدالة كل 5 دقائق (300000 مللي ثانية)
+    // يمكن تغييرها حسب الحاجة (مثل 3600000 مللي ثانية = ساعة)
+    const intervalTime = 300000; 
+
+    // الدالة التي سيتم تنفيذها بشكل دوري
+    const runJob = async () => {
+        try {
+            const result = await models.updatePastBookingsStatus();
+            // نستخدم دالة logger.info المفترضة في server.js للتوثيق
+            if (result.total > 0) {
+                 logger.info(`[SCHEDULER] Updated ${result.total} bookings: ${result.played} played, ${result.missed} missed.`);
+            }
+        } catch (error) {
+            logger.error(`[SCHEDULER] Failed to run status update job: ${error.message}`);
+        }
+    };
+    
+    // تشغيل فوري عند بدء التشغيل
+    runJob();
+
+    // إعداد المؤقت لتشغيل دوري
+    setInterval(runJob, intervalTime);
+
+    logger.info(`✅ Scheduled job for booking status update started, running every ${intervalTime / 1000} seconds.`);
+}
+
+
+// ... (داخل دالة بدء السيرفر app.listen)
+
+    // بدء السيرفر
+    app.listen(PORT, () => {
+        logger.info(`✅ Server running on ${APP_URL}`);
+        // ... (باقي سجلات بدء التشغيل)
+        
+        // 💡 استدعاء وظيفة الجدولة بعد بدء السيرفر بنجاح
+        startScheduledJobs(); 
+    });
+// ...
+
 // server.js (تعديل كامل)
 require('dotenv').config();
 
