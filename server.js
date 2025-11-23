@@ -1,42 +1,32 @@
-// server.js - الملف الموحد والمنظم ونقطة الدخول الرئيسية
+// server.js - الملف الموحد والمنظم مع الإعدادات المتقدمة
 
 require('dotenv').config();
 
-/* ============ المكتبات الأساسية والمساعدة (كما كانت في النسخة الأصلية) ============ */
+/* ============ المكتبات الأساسية ============ */
 const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
+const cors = require = require('cors');
 const path = require('path');
 const session = require('express-session');
 const passport = require('passport');
+const LocalStrategy = require('passport-local').Strategy; // تمت الإضافة
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const csrf = require('csurf');
-// تم نقل هذه المكتبات التي كانت موجودة في ملفك القديم
-const fs = require('fs');
-const bcrypt = require('bcrypt');
-const nodemailer = require('nodemailer'); // سيتم استخدامها عبر emailService.js
-const { v4: uuidv4 } = require('uuid');
-const QRCode = require('qrcode'); // قد لا نحتاجها في server.js ولكنها كانت موجودة في ملفك القديم
-const multer = require('multer'); // سيتم استخدامها عبر uploadConfig.js
-
-/* ============ ملفات النظام المُنظَّمة (التي سنقوم بإنشائها) ============ */
-// يتم استيراد دوال DB و Models مباشرة لاستخدامها في التهيئة (مثل Passport)
-const { createTables, healthCheck } = require('./db'); 
+const { execQuery, createTables, healthCheck, pool } = require('./db'); 
 const models = require('./models'); // استيراد دوال الموديل للمصادقة
-const routes = require('./routes'); // ملف المسارات الرئيسي
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
 const isProduction = process.env.NODE_ENV === 'production';
+const SECRET = process.env.SESSION_SECRET || 'a-very-strong-secret-key-for-session'; // مفتاح سري قوي
 
-/* ============ 🗄️ إعداد قاعدة البيانات والتحقق من الصحة ============ */
+/* ============ 🗄️ إعداد قاعدة البيانات ============ */
 async function initializeDB() {
     try {
-        await createTables(); // إنشاء الجداول إذا لم تكن موجودة (المنطق موجود في db.js)
+        await createTables();
         const check = await healthCheck();
         console.log(`🔌 PostgreSQL connected: ${check.status} (Version: ${check.version})`);
     } catch (error) {
@@ -44,77 +34,96 @@ async function initializeDB() {
         process.exit(1);
     }
 }
-initializeDB();
 
 
-/* ============ 🛡️ إعداد الأمان والـ Middlewares العامة ============ */
+/* ============ 🛡️ إعداد الأمان (Middlewares) ============ */
 
-// 1. CORS
-app.use(cors({
-    origin: APP_URL, 
-    credentials: true, 
-}));
-
-// 2. Helmet (لحماية رؤوس HTTP)
+// 1. Helmet: تأمين الرؤوس ضد نقاط الضعف المعروفة
 app.use(helmet());
 
-// 3. Rate Limiter (لتحديد معدل الطلبات)
-const limiter = rateLimit({
+// 2. CORS: تفعيل الوصول من واجهة المستخدم (Front-End)
+app.use(cors({
+    origin: isProduction ? process.env.FRONTEND_URL : 'http://localhost:8080', // أو أي مسار للواجهة الأمامية
+    credentials: true, // ضروري لإرسال ملفات تعريف الارتباط (Cookies)
+}));
+
+// 3. Rate Limiting: حد أقصى للطلبات
+const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 دقيقة
-    max: 100, // حد 100 طلب لكل IP خلال 15 دقيقة
+    max: 100, // 100 طلب لكل IP
+    message: 'عدد الطلبات تجاوز الحد المسموح به. يرجى المحاولة لاحقاً.',
     standardHeaders: true,
     legacyHeaders: false,
 });
-app.use(limiter);
+// تطبيق الحد على جميع مسارات API
+app.use('/api/', apiLimiter); 
 
-// 4. Body Parsers (لتحليل جسم الطلبات JSON و URL-encoded)
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// 4. Cookie Parser: لتحليل ملفات تعريف الارتباط
+app.use(cookieParser(SECRET)); 
 
-
-/* ============ 🍪 إعداد الجلسات والمصادقة (Session & Passport) ============ */
-
-// 5. Session Setup
+// 5. Session: إعداد الجلسات (مطلوب لـ Passport)
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'my_super_secure_secret',
+    secret: SECRET,
     resave: false,
-    saveUninitialized: false,
-    cookie: {
-        secure: isProduction, 
-        httpOnly: true, 
-        maxAge: 7 * 24 * 60 * 60 * 1000 // أسبوع واحد
-    }
+    saveUninitialized: false, 
+    cookie: { 
+        secure: isProduction, // Secure فقط في الإنتاج (HTTPS)
+        httpOnly: true, // لا يمكن الوصول إليه عبر JavaScript في المتصفح
+        maxAge: 24 * 60 * 60 * 1000, // صلاحية الجلسة: يوم واحد
+        sameSite: 'Lax' 
+    },
 }));
 
-// 6. Passport Initialization
-app.use(passport.initialize());
-app.use(passport.session()); 
+// 6. Body Parsers: لتحليل بيانات الطلبات
+// **ملاحظة حول Webhook:** يفضل استخدام express.raw() لـ /api/payment/webhook إذا كانت بوابة الدفع تتطلب التحقق من التوقيع باستخدام الـ Raw Body.
+app.use(express.json()); 
+app.use(express.urlencoded({ extended: true }));
 
-// 7. Passport Strategies (Google/Social Login)
-passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: "/auth/google/callback"
-}, async (accessToken, refreshToken, profile, done) => {
+
+/* ============ 🔒 إعداد المصادقة (Passport) ============ */
+
+// 1. تهيئة Local Strategy (البريد وكلمة المرور)
+passport.use(new LocalStrategy({ usernameField: 'email' }, async (email, password, done) => {
     try {
-        // يتم استدعاء دالة من models.js للبحث أو إنشاء المستخدم
-        const user = await models.findOrCreateGoogleUser({ 
-            googleId: profile.id, 
-            name: profile.displayName,
-            email: profile.emails[0].value 
-        });
-        return done(null, user);
+        const user = await models.findUserByEmail(email);
+        if (!user) return done(null, false); // المستخدم غير موجود
+
+        const isValid = await models.comparePassword(password, user.password);
+        if (!isValid) return done(null, false); // كلمة المرور غير صحيحة
+        
+        return done(null, user); // نجاح المصادقة
     } catch (err) {
         return done(err);
     }
 }));
 
-// 8. Passport Serialization
+// 2. تهيئة Google Strategy (إذا كانت الأكواد موجودة في .env)
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    passport.use(new GoogleStrategy({
+        clientID: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        callbackURL: "/auth/google/callback" // يجب أن يتطابق مع المسار في routes.js
+    }, async (accessToken, refreshToken, profile, done) => {
+        try {
+            // منطق البحث عن المستخدم أو إنشائه
+            const user = await models.findOrCreateGoogleUser({ 
+                googleId: profile.id, 
+                email: profile.emails[0].value,
+                name: profile.displayName 
+            }); 
+            return done(null, user);
+        } catch (error) {
+            return done(error);
+        }
+    }));
+}
+
+
+// 3. Serialization / Deserialization
 passport.serializeUser((user, done) => { 
-    done(null, user.id); 
+    done(null, user.id); // حفظ مُعرف المستخدم في الجلسة
 });
 
-// 9. Passport Deserialization
 passport.deserializeUser(async (id, done) => {
     try {
         const user = await models.getUserById(id); // استدعاء من models.js
@@ -124,48 +133,70 @@ passport.deserializeUser(async (id, done) => {
     }
 });
 
+// يجب أن يتم استدعاء initialize و session بعد app.use(session({...}));
+app.use(passport.initialize());
+app.use(passport.session()); 
 
-/* ============ 🔑 إعداد CSRF ============ */
 
-// 10. Cookie Parser
-app.use(cookieParser());
+/* ============ 🛡️ حماية CSRF ============ */
 
-// 11. CSRF Protection
 const csrfProtection = csrf({ cookie: true });
-
-// تصدير دالة CSRF Token ليتم استخدامها في routes.js
+// تصدير دالة الحماية لاستخدامها في routes.js
 module.exports.csrfProtection = csrfProtection; 
 
-// مسار خاص لجلب CSRF Token (للـ Frontend)
-app.get('/api/csrf-token', csrfProtection, (req, res) => {
-    res.json({ csrfToken: req.csrfToken() });
-});
 
+/* ============ 🖼️ خدمة الملفات الثابتة والصور ============ */
 
-/* ============ 🌐 خدمة الملفات الثابتة والـ Routes ============ */
-
-// 12. خدمة الملفات الثابتة (الـ Frontend: HTML, CSS, JS)
+// لخدمة الملفات الثابتة (HTML, CSS, JS) من مجلد 'public'
 app.use(express.static(path.join(__dirname, 'public')));
-// 13. خدمة مجلد الصور المحملة (uploads)
+// لخدمة الصور المحملة بواسطة Multer من مجلد 'public/uploads/images'
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images'))); 
 
-// 14. ربط المسارات
-app.use('/', routes);
 
-// 15. معالجة 404 (يجب أن تكون آخر middleware)
-app.use((req, res) => {
-    // إرسال رد JSON للمسارات API غير الموجودة
-    if (req.accepts('json') || req.path.startsWith('/api/')) {
-         return res.status(404).json({ success: false, message: 'مسار API غير موجود' });
+/* ============ 🔗 استيراد المسارات (Routes) ============ */
+
+const apiRoutes = require('./routes'); // استيراد المسارات الموحدة
+app.use('/', apiRoutes); // ربط جميع المسارات على المسار الرئيسي
+
+
+/* ============ 💣 معالجة الأخطاء النهائية ============ */
+
+// 1. معالجة خطأ 404 (الصفحة غير موجودة)
+app.use((req, res, next) => {
+    res.status(404).json({ success: false, message: 'الصفحة غير موجودة' });
+});
+
+// 2. معالج الأخطاء العام (بما في ذلك CSRF Errors)
+app.use((err, req, res, next) => {
+    console.error('❌ Global Error Handler:', err.stack);
+    if (err.code === 'EBADCSRFTOKEN') {
+        return res.status(403).json({ success: false, message: 'رمز CSRF غير صالح أو مفقود.' });
     }
-    // إرسال صفحة 404 لطلبات الـ Frontend
-    res.status(404).send('<!DOCTYPE html><html lang="ar">... صفحة 404 ...</html>');
+    // معالجة خطأ Multer (رفع الصور)
+    if (err.message === 'يُسمح برفع الصور فقط.') {
+        return res.status(400).json({ success: false, message: err.message });
+    }
+
+    const statusCode = err.status || 500;
+    res.status(statusCode).json({
+        success: false,
+        message: err.message || 'خطأ داخلي في السيرفر',
+        // لا تعرض تفاصيل الخطأ في الإنتاج لأسباب أمنية
+        error: isProduction ? undefined : err.stack
+    });
 });
 
 
-/* ============ 🚀 بدء التشغيل ============ */
+/* ============ 🚀 بدء السيرفر ============ */
 
-app.listen(PORT, () => {
-    console.log(`✅ Server running on ${APP_URL}`);
-    console.log(`🌐 Environment: ${isProduction ? 'Production' : 'Development'}`);
+// تهيئة قاعدة البيانات ثم بدء السيرفر
+initializeDB().then(() => {
+    app.listen(PORT, () => {
+      console.log(`✅ Server running on ${APP_URL}`);
+      console.log(`🌐 Environment: ${isProduction ? 'Production' : 'Development'}`);
+      console.log(`🔐 Security: CSRF, Rate Limiting, Helmet Active`);
+      console.log(`🎯 All setup completed successfully`);
+    });
+}).catch(error => {
+    console.error('❌ Failed to start server after DB initialization:', error.message);
 });
