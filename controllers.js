@@ -3,9 +3,8 @@
 const { validationResult } = require('express-validator'); 
 const models = require('./models'); 
 const { withTransaction } = require('./db'); 
-const { sendEmail } = require('./emailService'); 
-const passport = require('passport');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 // ===================================
 // 🛠️ دوال مساعدة عامة
@@ -42,52 +41,79 @@ async function registerController(req, res) {
 
         const newUser = await models.registerNewUser(req.body);
         
-        if (newUser.role !== 'player' && !newUser.is_approved) {
-            await sendEmail(email, '⏳ حسابك قيد المراجعة', `مرحباً ${newUser.name}، تم استلام طلبك. سيتم مراجعته من الإدارة.`);
-        }
-
         res.status(201).json({ 
             success: true, 
             message: "تم إنشاء الحساب بنجاح. يرجى تسجيل الدخول.", 
-            user: { id: newUser.id, role: newUser.role, is_approved: newUser.is_approved } 
+            user: { 
+                id: newUser.id, 
+                name: newUser.name,
+                email: newUser.email,
+                role: newUser.role, 
+                is_approved: newUser.is_approved 
+            } 
         });
     } catch (error) {
         handleInternalError(res, error, "فشل في عملية التسجيل.");
     }
 }
 
-function loginController(req, res, next) {
-    passport.authenticate('local', (err, user, info) => {
-        if (err) return handleInternalError(res, err, 'Internal server error');
-        if (!user) return res.status(401).json({ success: false, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' });
-        
-        // إنشاء JWT token
-        const token = jwt.sign(
-            { id: user.id, role: user.role, email: user.email },
-            process.env.JWT_SECRET || 'fallback-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
+async function loginController(req, res, next) {
+    const { email, password } = req.body;
+    
+    try {
+        const user = await models.findUserByEmail(email);
+        if (!user) {
+            return res.status(401).json({ success: false, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' });
+        }
+
+        const isMatch = await models.comparePassword(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' });
+        }
 
         if (!user.is_approved && (user.role === 'owner' || user.role === 'manager')) {
             return res.status(403).json({ success: false, message: "الحساب قيد المراجعة ولم تتم الموافقة عليه بعد." });
         }
 
-        delete user.password; 
+        // إنشاء JWT token
+        const token = jwt.sign(
+            { 
+                id: user.id, 
+                role: user.role, 
+                email: user.email 
+            },
+            process.env.JWT_SECRET || 'fallback-secret',
+            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+        );
+
+        // إرجاع البيانات بدون كلمة المرور
+        const userResponse = {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            is_approved: user.is_approved,
+            phone: user.phone,
+            avatar_url: user.avatar_url
+        };
+
         res.json({ 
             success: true, 
             message: 'تم تسجيل الدخول بنجاح', 
             token,
-            user: { id: user.id, name: user.name, role: user.role, email: user.email } 
+            user: userResponse
         });
-    })(req, res, next);
+    } catch (error) {
+        handleInternalError(res, error, 'فشل في تسجيل الدخول');
+    }
 }
 
-const logoutController = (req, res) => {
+async function logoutController(req, res) {
     // مع JWT، التسجيل الخروج يكون على العميل بحذف التوكن
     res.json({ success: true, message: 'تم تسجيل الخروج بنجاح' });
-};
+}
 
-const getCurrentUserController = async (req, res) => {
+async function getCurrentUserController(req, res) {
     try {
         const user = await models.getUserById(req.user.id);
         if (!user) {
@@ -108,7 +134,7 @@ const getCurrentUserController = async (req, res) => {
     } catch (error) {
         handleInternalError(res, error, 'فشل في جلب بيانات المستخدم');
     }
-};
+}
 
 // ===================================
 // 🏟️ المتحكمات: العامة واللاعب
@@ -150,7 +176,13 @@ async function createBookingController(req, res) {
     try {
         const newBooking = await withTransaction(async (client) => {
             const booking = await models.createBooking(bookingData, client);
-            await models.createActivityLog(bookingData.user_id, 'BOOKING_CREATE', `تم إنشاء حجز جديد للملعب ${booking.stadium_id}`, booking.id, client);
+            await models.createActivityLog(
+                bookingData.user_id, 
+                'BOOKING_CREATE', 
+                `تم إنشاء حجز جديد للملعب ${booking.stadium_id}`, 
+                booking.id, 
+                client
+            );
             return booking;
         });
 
@@ -164,7 +196,7 @@ async function createBookingController(req, res) {
             data: newBooking 
         });
     } catch (error) {
-        if (error.message.includes('conflict') || error.message.includes('code is invalid')) {
+        if (error.message.includes('conflict') || error.message.includes('invalid')) {
             return res.status(409).json({ success: false, message: error.message });
         }
         handleInternalError(res, error, 'فشل في عملية الحجز');
@@ -188,14 +220,30 @@ async function cancelBookingPlayerController(req, res) {
             const cancelledBooking = await models.cancelBooking(bookingId, req.user.id, 'player_cancellation', client);
             if (!cancelledBooking) throw new Error("الحجز غير موجود أو لا يمكن إلغاؤه في الوقت الحالي.");
             
-            await models.createActivityLog(req.user.id, 'BOOKING_CANCEL', `قام اللاعب بإلغاء الحجز ${bookingId}`, bookingId, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'BOOKING_CANCEL', 
+                `قام اللاعب بإلغاء الحجز ${bookingId}`, 
+                bookingId, 
+                client
+            );
             return cancelledBooking;
         });
 
-        const refundMessage = result.deposit_paid > 0 ? ` وتم إصدار كود تعويض بقيمة ${result.deposit_paid}.` : '';
-        res.json({ success: true, message: `تم إلغاء الحجز بنجاح.${refundMessage}` });
+        const refundMessage = result.deposit_paid > 0 ? 
+            ` وتم إصدار كود تعويض بقيمة ${result.deposit_paid}.` : 
+            '';
+            
+        res.json({ 
+            success: true, 
+            message: `تم إلغاء الحجز بنجاح.${refundMessage}`,
+            data: result
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || 'فشل في إلغاء الحجز' });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || 'فشل في إلغاء الحجز' 
+        });
     }
 }
 
@@ -209,13 +257,26 @@ async function submitRatingController(req, res) {
             if (!canRate) throw new Error("لا يمكن تقييم الملعب إلا بعد حجز وإتمام اللعب فيه.");
             
             const ratingResult = await models.submitNewRating(stadiumId, req.user.id, rating, comment, client);
-            await models.createActivityLog(req.user.id, 'RATING_SUBMIT', `تم تقييم الملعب ${stadiumId}`, stadiumId, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'RATING_SUBMIT', 
+                `تم تقييم الملعب ${stadiumId}`, 
+                stadiumId, 
+                client
+            );
             return ratingResult;
         });
 
-        res.status(201).json({ success: true, message: "تم تسجيل تقييمك بنجاح", data: newRating });
+        res.status(201).json({ 
+            success: true, 
+            message: "تم تسجيل تقييمك بنجاح", 
+            data: newRating 
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || "فشل في تسجيل التقييم" });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || "فشل في تسجيل التقييم" 
+        });
     }
 }
 
@@ -224,7 +285,19 @@ async function submitRatingController(req, res) {
 // ===================================
 
 async function handlePaymentNotificationController(req, res) {
-    const { booking_id, reference, status, amount } = req.body; 
+    // التحقق من توقيع الـ webhook
+    const signature = req.headers['x-payment-signature'];
+    const expectedSignature = crypto
+        .createHmac('sha256', process.env.PAYMENT_WEBHOOK_SECRET || 'webhook-secret')
+        .update(req.rawBody)
+        .digest('hex');
+
+    if (signature !== expectedSignature) {
+        console.error('❌ Invalid webhook signature');
+        return res.status(401).json({ success: false, message: "توقيع غير صالح." });
+    }
+
+    const { booking_id, reference, status, amount } = req.body;
     
     if (!booking_id || !reference || !status) {
         return res.status(400).json({ success: false, message: "بيانات الإشعار غير كاملة." });
@@ -251,18 +324,25 @@ async function handlePaymentNotificationController(req, res) {
                 // تأكيد الحجز
                 const confirmedBooking = await models.finalizePayment(booking_id, reference, amount, client);
                 
-                await models.createActivityLog(confirmedBooking.user_id, 'PAYMENT_SUCCESS', `تم تأكيد دفع العربون للحجز ${booking_id}`, booking_id, client);
-                
-                // إرسال إيميل تأكيد
-                try {
-                    await sendEmail(confirmedBooking.user_email, '✅ تأكيد دفع العربون', `تم تأكيد دفع العربون بنجاح لحجزك رقم ${booking_id}.`);
-                } catch (emailError) {
-                    console.error('Failed to send confirmation email:', emailError);
-                }
+                await models.createActivityLog(
+                    confirmedBooking.user_id, 
+                    'PAYMENT_SUCCESS', 
+                    `تم تأكيد دفع العربون للحجز ${booking_id}`, 
+                    booking_id, 
+                    client
+                );
 
+                console.log(`✅ Payment confirmed for booking ${booking_id}`);
             } else if (status === 'failed' || status === 'cancelled') {
                 await models.cancelBooking(booking_id, null, 'system_payment_failure', client);
-                await models.createActivityLog(null, 'PAYMENT_FAILURE', `فشل دفع العربون للحجز ${booking_id}`, booking_id, client);
+                await models.createActivityLog(
+                    null, 
+                    'PAYMENT_FAILURE', 
+                    `فشل دفع العربون للحجز ${booking_id}`, 
+                    booking_id, 
+                    client
+                );
+                console.log(`❌ Payment failed for booking ${booking_id}`);
             }
         });
         
@@ -279,7 +359,10 @@ async function validateCodeController(req, res) {
         const validationResult = await models.validateCode(code, stadium_id, req.user.id);
         res.json({ success: true, data: validationResult });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || "الكود غير صالح أو منتهي الصلاحية" });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || "الكود غير صالح أو منتهي الصلاحية" 
+        });
     }
 }
 
@@ -293,13 +376,26 @@ async function createPlayerRequestController(req, res) {
     try {
         const newRequest = await withTransaction(async (client) => {
             const request = await models.createPlayerRequest(booking_id, req.user.id, players_needed, details, client);
-            await models.createActivityLog(req.user.id, 'PLAYER_REQUEST_CREATE', `طلب لاعبين للحجز ${booking_id}`, request.id, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'PLAYER_REQUEST_CREATE', 
+                `طلب لاعبين للحجز ${booking_id}`, 
+                request.id, 
+                client
+            );
             return request;
         });
 
-        res.status(201).json({ success: true, message: 'تم إنشاء طلب اللاعبين بنجاح.', data: newRequest });
+        res.status(201).json({ 
+            success: true, 
+            message: 'تم إنشاء طلب اللاعبين بنجاح.', 
+            data: newRequest 
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || 'فشل في إنشاء طلب اللاعبين' });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || 'فشل في إنشاء طلب اللاعبين' 
+        });
     }
 }
 
@@ -318,13 +414,26 @@ async function joinPlayerRequestController(req, res) {
     try {
         const result = await withTransaction(async (client) => {
             const joinResult = await models.joinPlayerRequest(requestId, req.user.id, client);
-            await models.createActivityLog(req.user.id, 'PLAYER_JOIN', `انضمام لطلب اللاعبين ${requestId}`, requestId, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'PLAYER_JOIN', 
+                `انضمام لطلب اللاعبين ${requestId}`, 
+                requestId, 
+                client
+            );
             return joinResult;
         });
 
-        res.json({ success: true, message: 'تم الانضمام للطلب بنجاح.', data: result });
+        res.json({ 
+            success: true, 
+            message: 'تم الانضمام للطلب بنجاح.', 
+            data: result 
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || 'فشل في الانضمام للطلب' });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || 'فشل في الانضمام للطلب' 
+        });
     }
 }
 
@@ -344,21 +453,29 @@ async function getOwnerStadiumsController(req, res) {
 async function createStadiumController(req, res) {
     try {
         const { name, location, price_per_hour, deposit_amount, features, type } = req.body;
-        const userId = req.user.id; 
+        const userId = req.user.id;
         
         const image_url = req.file ? `/uploads/images/${req.file.filename}` : null;
         
         const newStadium = await withTransaction(async (client) => {
             const data = { 
-                name, location, type, price_per_hour: parseFloat(price_per_hour), 
-                deposit_amount: parseFloat(deposit_amount), image_url, 
-                features: JSON.parse(features || '[]') 
+                name, 
+                location, 
+                type, 
+                price_per_hour: parseFloat(price_per_hour), 
+                deposit_amount: parseFloat(deposit_amount), 
+                image_url, 
+                features: features ? JSON.parse(features) : [] 
             };
             const stadium = await models.createStadium(data, userId, client);
             return stadium;
         });
 
-        res.status(201).json({ success: true, message: "تم إنشاء الملعب بنجاح", data: newStadium });
+        res.status(201).json({ 
+            success: true, 
+            message: "تم إنشاء الملعب بنجاح", 
+            data: newStadium 
+        });
     } catch (error) {
         handleInternalError(res, error, "فشل في إنشاء الملعب");
     }
@@ -375,10 +492,17 @@ async function updateStadiumController(req, res) {
         
         const updatedStadium = await models.updateStadium(stadium_id, updateData, req.user.id);
         if (!updatedStadium) {
-            return res.status(404).json({ success: false, message: 'الملعب غير موجود أو لا تملك صلاحية تعديله' });
+            return res.status(404).json({ 
+                success: false, 
+                message: 'الملعب غير موجود أو لا تملك صلاحية تعديله' 
+            });
         }
 
-        res.json({ success: true, message: 'تم تحديث الملعب بنجاح', data: updatedStadium });
+        res.json({ 
+            success: true, 
+            message: 'تم تحديث الملعب بنجاح', 
+            data: updatedStadium 
+        });
     } catch (error) {
         handleInternalError(res, error, 'فشل في تحديث الملعب');
     }
@@ -399,13 +523,26 @@ async function confirmBookingOwnerController(req, res) {
             const booking = await models.confirmBooking(req.params.bookingId, req.user.id, client);
             if (!booking) throw new Error("الحجز غير موجود أو مؤكد بالفعل.");
             
-            await models.createActivityLog(req.user.id, 'BOOKING_CONFIRM', `تم تأكيد الحجز ${req.params.bookingId}`, req.params.bookingId, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'BOOKING_CONFIRM', 
+                `تم تأكيد الحجز ${req.params.bookingId}`, 
+                req.params.bookingId, 
+                client
+            );
             return booking;
         });
 
-        res.json({ success: true, message: 'تم تأكيد الحجز بنجاح.', data: confirmedBooking });
+        res.json({ 
+            success: true, 
+            message: 'تم تأكيد الحجز بنجاح.', 
+            data: confirmedBooking 
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || 'فشل في تأكيد الحجز' });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || 'فشل في تأكيد الحجز' 
+        });
     }
 }
 
@@ -415,11 +552,21 @@ async function cancelBookingOwnerController(req, res) {
             const cancelledBooking = await models.cancelBooking(req.params.bookingId, req.user.id, 'owner_cancellation', client);
             if (!cancelledBooking) throw new Error("الحجز غير موجود أو ملغى بالفعل.");
             
-            await models.createActivityLog(req.user.id, 'BOOKING_CANCEL', `قام المالك/الموظف بإلغاء الحجز ${req.params.bookingId}`, req.params.bookingId, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'BOOKING_CANCEL', 
+                `قام المالك/الموظف بإلغاء الحجز ${req.params.bookingId}`, 
+                req.params.bookingId, 
+                client
+            );
             return cancelledBooking;
         });
 
-        res.json({ success: true, message: 'تم إلغاء الحجز بنجاح', data: result });
+        res.json({ 
+            success: true, 
+            message: 'تم إلغاء الحجز بنجاح', 
+            data: result 
+        });
     } catch (error) {
         handleInternalError(res, error, error.message || 'فشل في إلغاء الحجز');
     }
@@ -431,13 +578,26 @@ async function blockSlotController(req, res) {
     try {
         const newBlock = await withTransaction(async (client) => {
             const block = await models.blockTimeSlot(stadium_id, date, start_time, end_time, reason, req.user.id, client);
-            await models.createActivityLog(req.user.id, 'SLOT_BLOCK', `تم حظر فترة زمنية للملعب ${stadium_id}`, stadium_id, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'SLOT_BLOCK', 
+                `تم حظر فترة زمنية للملعب ${stadium_id}`, 
+                stadium_id, 
+                client
+            );
             return block;
         });
         
-        res.status(201).json({ success: true, message: 'تم حظر الفترة الزمنية بنجاح', data: newBlock });
+        res.status(201).json({ 
+            success: true, 
+            message: 'تم حظر الفترة الزمنية بنجاح', 
+            data: newBlock 
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || 'فشل في حظر الفترة الزمنية' });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || 'فشل في حظر الفترة الزمنية' 
+        });
     }
 }
 
@@ -483,19 +643,22 @@ async function approveManagerController(req, res) {
             
             const updatedUser = await models.approveManager(userId, req.user.id, client);
             
-            await models.createActivityLog(req.user.id, 'ADMIN_ACTION', `تم الموافقة على طلب المالك/المدير للمستخدم: ${user.email}`, userId, client);
-            
-            // إرسال إيميل إشعار
-            try {
-                await sendEmail(user.email, '✅ تم الموافقة على حسابك', 'تهانينا! تم الموافقة على حسابك كمالك/مدير ملعب. يمكنك الآن تسجيل الدخول.');
-            } catch (emailError) {
-                console.error('Failed to send approval email:', emailError);
-            }
+            await models.createActivityLog(
+                req.user.id, 
+                'ADMIN_ACTION', 
+                `تم الموافقة على طلب المالك/المدير للمستخدم: ${user.email}`, 
+                userId, 
+                client
+            );
             
             return updatedUser;
         });
 
-        res.json({ success: true, message: `تم الموافقة على ${approvedUser.name} كمالك ملعب.`, data: approvedUser });
+        res.json({ 
+            success: true, 
+            message: `تم الموافقة على ${approvedUser.name} كمالك ملعب.`, 
+            data: approvedUser 
+        });
     } catch (error) {
         handleInternalError(res, error, error.message || 'فشل في الموافقة على المدير');
     }
@@ -512,18 +675,31 @@ async function getAllUsersController(req, res) {
 
 async function updateCodeStatusController(req, res) {
     const { codeId } = req.params;
-    const { isActive, type } = req.body; 
+    const { isActive, type } = req.body;
     
     try {
         const updatedCode = await withTransaction(async (client) => {
             const result = await models.updateCodeStatus(codeId, isActive, type, client);
-            await models.createActivityLog(req.user.id, 'CODE_STATUS_UPDATE', `تم تغيير حالة الكود ${codeId} إلى ${isActive ? 'نشط' : 'معطل'} (${type})`, codeId, client);
+            await models.createActivityLog(
+                req.user.id, 
+                'CODE_STATUS_UPDATE', 
+                `تم تغيير حالة الكود ${codeId} إلى ${isActive ? 'نشط' : 'معطل'}`, 
+                codeId, 
+                client
+            );
             return result;
         });
 
-        res.json({ success: true, message: `تم تحديث حالة الكود بنجاح.`, data: updatedCode });
+        res.json({ 
+            success: true, 
+            message: `تم تحديث حالة الكود بنجاح.`, 
+            data: updatedCode 
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message || 'فشل في تحديث حالة الكود' });
+        res.status(400).json({ 
+            success: false, 
+            message: error.message || 'فشل في تحديث حالة الكود' 
+        });
     }
 }
 
