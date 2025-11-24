@@ -18,7 +18,8 @@ async function createActivityLog(user_id, action, description, entity_id = null,
     const values = [user_id, action, description, entity_id];
     
     if (client) {
-        return client.query(query, values).then(res => res.rows[0]);
+        const result = await client.query(query, values);
+        return result.rows[0];
     }
     return execQueryOne(query, values);
 }
@@ -58,16 +59,16 @@ async function registerNewUser(data, client = null) {
     `;
     const values = [name, email, hashedPassword, phone, role, is_approved];
     
+    let user;
     if (client) {
         const result = await client.query(query, values);
-        const user = result.rows[0];
+        user = result.rows[0];
         await createActivityLog(user.id, 'USER_REGISTER', `New user registered with role: ${role}`, user.id, client);
-        return user;
     } else {
-        const user = await execQueryOne(query, values);
+        user = await execQueryOne(query, values);
         await createActivityLog(user.id, 'USER_REGISTER', `New user registered with role: ${role}`, user.id);
-        return user;
     }
+    return user;
 }
 
 async function loginUser(email, password) {
@@ -132,7 +133,7 @@ async function getPendingManagers() {
 }
 
 async function approveManager(manager_id, admin_id, client = null) {
-    const query = `UPDATE users SET is_approved = TRUE, role = 'owner' WHERE id = $1 RETURNING id, name;`;
+    const query = `UPDATE users SET is_approved = TRUE WHERE id = $1 RETURNING id, name, email;`;
     
     let user;
     if (client) {
@@ -206,7 +207,7 @@ async function getStadiumById(id) {
     const stadium = await execQueryOne(`SELECT * FROM stadiums WHERE id = $1;`, [id]);
     if (stadium) {
         const rating = await getStadiumAverageRating(id);
-        stadium.rating = rating.average_rating;
+        stadium.average_rating = rating.average_rating;
         stadium.total_ratings = rating.total_ratings;
     }
     return stadium;
@@ -289,27 +290,38 @@ async function updateStadium(stadium_id, data, user_id, client = null) {
 // =======================================================
 
 async function getAvailableSlots(stadium_id, date) {
-    const bookedSlotsQuery = `
-        SELECT start_time, end_time FROM bookings 
-        WHERE stadium_id = $1 AND date = $2 AND status IN ('confirmed', 'pending');
-    `;
-    const blockedSlotsQuery = `
-        SELECT start_time, end_time FROM blocked_slots 
-        WHERE stadium_id = $1 AND date = $2;
+    const query = `
+        SELECT 
+            generate_series(
+                date + time '08:00', 
+                date + time '22:00', 
+                '1 hour'::interval
+            ) as slot_time
+        FROM (SELECT $1::date as date) d
+        WHERE NOT EXISTS (
+            SELECT 1 FROM bookings 
+            WHERE stadium_id = $2 
+            AND date = $1
+            AND status IN ('confirmed', 'pending')
+            AND start_time <= extract(hour from generate_series)::text::time
+            AND end_time > extract(hour from generate_series)::text::time
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM blocked_slots 
+            WHERE stadium_id = $2 
+            AND date = $1
+            AND start_time <= extract(hour from generate_series)::text::time
+            AND end_time > extract(hour from generate_series)::text::time
+        );
     `;
     
-    const [bookedSlots, blockedSlots] = await Promise.all([
-        execQuery(bookedSlotsQuery, [stadium_id, date]),
-        execQuery(blockedSlotsQuery, [stadium_id, date])
-    ]);
-    
-    return { bookedSlots, blockedSlots };
+    return execQuery(query, [date, stadium_id]);
 }
 
 async function createBooking(data, client = null) {
-    const { user_id, stadium_id, date, start_time, end_time, total_price, deposit_amount, remaining_amount, players_needed, compensation_code_value } = data;
+    const { user_id, stadium_id, date, start_time, end_time, total_price, deposit_amount, players_needed, compensation_code_value } = data;
     
-    let actualRemainingAmount = remaining_amount;
+    let actualRemainingAmount = total_price - deposit_amount;
     let finalCompensationCode = null;
     
     if (compensation_code_value) {
@@ -325,8 +337,8 @@ async function createBooking(data, client = null) {
             throw new Error('Compensation code is invalid, used, or not owned by user.');
         }
         
-        const compensationAmount = parseFloat(codeResult.amount || codeResult.rows?.[0]?.amount);
-        actualRemainingAmount = Math.max(0, remaining_amount - compensationAmount);
+        const compensationAmount = parseFloat(codeResult[0].amount);
+        actualRemainingAmount = Math.max(0, actualRemainingAmount - compensationAmount);
         finalCompensationCode = compensation_code_value;
     }
 
@@ -350,13 +362,16 @@ async function createBooking(data, client = null) {
 
     const bookingQuery = `
         INSERT INTO bookings (user_id, stadium_id, date, start_time, end_time, total_price, deposit_paid, remaining_amount, players_needed, compensation_code, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *;
     `;
+    
+    const status = deposit_amount > 0 ? 'pending_payment' : 'pending';
+    
     const bookingValues = [
         user_id, stadium_id, date, start_time, end_time, 
         total_price, deposit_amount, actualRemainingAmount, 
-        players_needed, finalCompensationCode
+        players_needed, finalCompensationCode, status
     ];
     
     let newBooking;
@@ -375,7 +390,7 @@ async function createBooking(data, client = null) {
         newBooking = await execQueryOne(bookingQuery, bookingValues);
     }
     
-    await createActivityLog(user_id, 'BOOKING_CREATE', `Created pending booking #${newBooking.id}`, newBooking.id, client);
+    await createActivityLog(user_id, 'BOOKING_CREATE', `Created booking #${newBooking.id}`, newBooking.id, client);
     return newBooking;
 }
 
@@ -540,23 +555,6 @@ async function getStadiumRatings(stadium_id) {
     return execQuery(query, [stadium_id]);
 }
 
-async function canUserRateStadium(stadium_id, user_id, client = null) {
-    const query = `
-        SELECT 1 FROM bookings 
-        WHERE stadium_id = $1 AND user_id = $2 AND status = 'confirmed' AND date < CURRENT_DATE
-        LIMIT 1;
-    `;
-    
-    let result;
-    if (client) {
-        result = await client.query(query, [stadium_id, user_id]);
-    } else {
-        result = await execQuery(query, [stadium_id, user_id]);
-    }
-    
-    return result && result.length > 0;
-}
-
 // =======================================================
 // 👥 طلبات اللاعبين الإضافيين
 // =======================================================
@@ -613,10 +611,24 @@ async function getPlayerRequestsForBooking(booking_id) {
 }
 
 async function joinPlayerRequest(request_id, player_id, client = null) {
+    // First check if request is still active and has available slots
+    const checkQuery = `SELECT players_needed FROM player_requests WHERE id = $1 AND status = 'active';`;
+    let checkResult;
+    
+    if (client) {
+        checkResult = await client.query(checkQuery, [request_id]);
+    } else {
+        checkResult = await execQuery(checkQuery, [request_id]);
+    }
+    
+    if (!checkResult || checkResult.length === 0 || checkResult[0].players_needed <= 0) {
+        throw new Error('Request is no longer active or already full.');
+    }
+
     const joinQuery = `
         UPDATE player_requests 
         SET players_needed = players_needed - 1 
-        WHERE id = $1 AND players_needed > 0
+        WHERE id = $1 AND players_needed > 0 AND status = 'active'
         RETURNING players_needed, requester_id;
     `;
     
@@ -641,7 +653,7 @@ async function joinPlayerRequest(request_id, player_id, client = null) {
 }
 
 // =======================================================
-// 🎫 أكواد التعويض
+// 🎫 أكواد التعويض والتحقق
 // =======================================================
 
 async function createCompensationCode(user_id, amount, client = null) {
@@ -676,7 +688,7 @@ async function getValidCompensationCode(code_value, user_id) {
 async function validateCode(code_value, stadium_id, user_id) {
     const code = await getValidCompensationCode(code_value, user_id);
     if (!code) {
-        return { isValid: false, message: 'الكود غير صالح أو مستخدم مسبقاً' };
+        throw new Error('الكود غير صالح أو مستخدم مسبقاً');
     }
     
     return {
@@ -691,15 +703,15 @@ async function updateCodeStatus(code_id, is_active, type, client = null) {
     const query = `
         UPDATE codes 
         SET is_active = $1, updated_at = NOW() 
-        WHERE code_id = $2 AND code_type = $3
+        WHERE code_id = $2
         RETURNING *;
     `;
     
     if (client) {
-        const result = await client.query(query, [is_active, code_id, type]);
+        const result = await client.query(query, [is_active, code_id]);
         return result.rows[0];
     } else {
-        return execQueryOne(query, [is_active, code_id, type]);
+        return execQueryOne(query, [is_active, code_id]);
     }
 }
 
@@ -711,7 +723,7 @@ async function finalizePayment(booking_id, reference, amount, client = null) {
     const query = `
         UPDATE bookings 
         SET status = 'confirmed', payment_reference = $2, deposit_paid = $3, remaining_amount = total_price - $3
-        WHERE booking_id = $1 AND status = 'pending_payment'
+        WHERE id = $1 AND status = 'pending_payment'
         RETURNING *;
     `;
     
@@ -783,6 +795,27 @@ async function getDashboardStats() {
         totalBookings: parseInt(totalBookings.count),
         pendingManagers: parseInt(pendingManagers.count),
     };
+}
+
+// =======================================================
+// 🛡️ الدوال الجديدة المطلوبة
+// =======================================================
+
+async function canUserRateStadium(stadium_id, user_id, client = null) {
+    const query = `
+        SELECT 1 FROM bookings 
+        WHERE stadium_id = $1 AND user_id = $2 AND status = 'confirmed' AND date < CURRENT_DATE
+        LIMIT 1;
+    `;
+    
+    let result;
+    if (client) {
+        result = await client.query(query, [stadium_id, user_id]);
+    } else {
+        result = await execQuery(query, [stadium_id, user_id]);
+    }
+    
+    return result && result.length > 0;
 }
 
 // ===================================
