@@ -12,8 +12,6 @@ const cookieParser = require('cookie-parser');
 
 // ============ 🛡️ استيراد المكونات الأساسية ============
 const { createTables, healthCheck } = require('./db'); 
-// ❗ مهم: استيراد الـ middlewares
-const { verifyToken, checkPermissions } = require('./middlewares/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
