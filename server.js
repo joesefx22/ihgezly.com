@@ -229,3 +229,185 @@ module.exports = {
     csrfProtection,
     app
 };
+
+// server.js - الملف الرئيسي المُحدث مع JWT
+
+require('dotenv').config();
+
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const session = require('express-session');
+const passport = require('passport');
+const LocalStrategy = require('passport-local').Strategy;
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
+
+const { execQuery, createTables, healthCheck, pool } = require('./db'); 
+const models = require('./models');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
+const isProduction = process.env.NODE_ENV === 'production';
+
+// ===================================
+// 🛡️ إعداد الأمان
+// ===================================
+
+app.use(helmet());
+app.use(cors({
+    origin: isProduction ? process.env.FRONTEND_URL : ['http://localhost:3000', 'http://localhost:8080'],
+    credentials: true,
+}));
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: 'عدد الطلبات تجاوز الحد المسموح به. يرجى المحاولة لاحقاً.',
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+app.use('/api/', apiLimiter);
+
+// استثناء Webhook من Rate Limiting
+app.use((req, res, next) => {
+    if (req.path.startsWith('/api/payment/webhook')) {
+        return next();
+    }
+    apiLimiter(req, res, next);
+});
+
+app.use(cookieParser());
+app.use(express.json({
+    verify: (req, res, buf) => {
+        if (req.originalUrl.startsWith('/api/payment/webhook')) {
+            req.rawBody = buf.toString();
+        }
+    },
+    limit: '5mb'
+}));
+app.use(express.urlencoded({ extended: true }));
+
+// ===================================
+// 🔐 إعداد Passport
+// ===================================
+
+passport.use(new LocalStrategy({ 
+    usernameField: 'email' 
+}, async (email, password, done) => {
+    try {
+        const user = await models.findUserByEmail(email);
+        if (!user) return done(null, false, { message: 'البريد الإلكتروني غير مسجل.' });
+
+        const isValid = await models.comparePassword(password, user.password);
+        if (!isValid) return done(null, false, { message: 'كلمة المرور غير صحيحة.' });
+        
+        return done(null, user);
+    } catch (err) {
+        return done(err);
+    }
+}));
+
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    passport.use(new GoogleStrategy({
+        clientID: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        callbackURL: "/auth/google/callback"
+    }, async (accessToken, refreshToken, profile, done) => {
+        try {
+            const user = await models.findOrCreateGoogleUser({ 
+                googleId: profile.id, 
+                email: profile.emails[0].value,
+                name: profile.displayName 
+            });
+            return done(null, user);
+        } catch (error) {
+            return done(error);
+        }
+    }));
+}
+
+passport.serializeUser((user, done) => { 
+    done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+    try {
+        const user = await models.getUserById(id);
+        done(null, user); 
+    } catch (err) {
+        done(err);
+    }
+});
+
+app.use(passport.initialize());
+
+// ===================================
+// 🗄️ إعداد قاعدة البيانات
+// ===================================
+
+async function initializeDB() {
+    try {
+        await createTables();
+        const check = await healthCheck();
+        console.log(`🔌 PostgreSQL connected: ${check.status} (Version: ${check.version})`);
+    } catch (error) {
+        console.error('❌ FATAL: Failed to connect or create tables:', error.message);
+        process.exit(1);
+    }
+}
+
+// ===================================
+// 🔗 خدمة الملفات والمسارات
+// ===================================
+
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images')));
+
+const routes = require('./routes');
+app.use('/', routes);
+
+// ===================================
+// 💣 معالجة الأخطاء
+// ===================================
+
+app.use((req, res, next) => {
+    res.status(404).json({ success: false, message: 'الصفحة غير موجودة' });
+});
+
+app.use((err, req, res, next) => {
+    console.error('❌ Global Error Handler:', err.stack);
+    
+    if (err.message && err.message.includes('يُسمح برفع الصور فقط.')) {
+        return res.status(400).json({ success: false, message: err.message });
+    }
+
+    const statusCode = err.status || 500;
+    res.status(statusCode).json({
+        success: false,
+        message: err.message || 'خطأ داخلي في السيرفر',
+        error: isProduction ? undefined : err.stack
+    });
+});
+
+// ===================================
+// 🚀 بدء السيرفر
+// ===================================
+
+initializeDB().then(() => {
+    app.listen(PORT, () => {
+      console.log(`✅ Server running on ${APP_URL}`);
+      console.log(`🌐 Environment: ${isProduction ? 'Production' : 'Development'}`);
+      console.log(`🔐 Security: JWT Auth, Rate Limiting, Helmet Active`);
+      console.log(`💰 Webhook Ready: Raw body parser enabled for payment webhooks`);
+    });
+}).catch(error => {
+    console.error('❌ Failed to start server:', error.message);
+    process.exit(1);
+});
+
+module.exports = app;
