@@ -163,7 +163,7 @@ async function createTables() {
             );
         `);
 
-        -- 🆕 جدول تعيين الموظفين للملاعب
+        // 🆕 جدول تعيين الموظفين للملاعب
         await execQuery(`
             CREATE TABLE IF NOT EXISTS employee_assignments (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -175,7 +175,7 @@ async function createTables() {
             );
         `);
 
-        -- 🆕 جدول الساعات المُولَّدة
+        // 🆕 جدول الساعات المُولَّدة
         await execQuery(`
             CREATE TABLE IF NOT EXISTS generated_slots (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -221,7 +221,7 @@ async function createTables() {
             );
         `);
 
-        -- 🆕 جدول الأكواد
+        // 🆕 جدول الأكواد
         await execQuery(`
             CREATE TABLE IF NOT EXISTS discount_codes (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
