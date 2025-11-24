@@ -94,3 +94,166 @@ module.exports = {
     verifyToken, 
     checkPermissions 
 };
+
+// middlewares/auth.js - مصادقة JWT موحدة ومُصلحة
+
+const jwt = require('jsonwebtoken');
+
+// الأدوار المسموحة في النظام
+const ROLES = ['player', 'owner', 'manager', 'admin'];
+
+/**
+ * 🔐 ميدلوير التحقق من توكن JWT
+ */
+function verifyToken(req, res, next) {
+    try {
+        const authHeader = req.headers.authorization;
+        
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'مطلوب توكن مصادقة' 
+            });
+        }
+
+        const token = authHeader.split(' ')[1];
+        
+        if (!token) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'توكن المصادقة غير صالح' 
+            });
+        }
+
+        // فك تشفير التوكن
+        const decoded = jwt.verify(
+            token, 
+            process.env.JWT_SECRET || 'fallback-secret'
+        );
+
+        // التحقق من وجود البيانات الأساسية
+        if (!decoded.id || !decoded.role || !decoded.email) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'توكن المصادقة تالف' 
+            });
+        }
+
+        // التحقق من صحة الدور
+        if (!ROLES.includes(decoded.role)) {
+            return res.status(403).json({ 
+                success: false, 
+                message: 'دور المستخدم غير صالح' 
+            });
+        }
+
+        // إضافة بيانات المستخدم للطلب
+        req.user = {
+            id: decoded.id,
+            role: decoded.role,
+            email: decoded.email
+        };
+
+        next();
+    } catch (error) {
+        console.error('JWT Verification Error:', error.message);
+        
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'انتهت صلاحية التوكن، يرجى تسجيل الدخول مرة أخرى' 
+            });
+        }
+        
+        if (error.name === 'JsonWebTokenError') {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'توكن مصادقة غير صالح' 
+            });
+        }
+
+        return res.status(500).json({ 
+            success: false, 
+            message: 'خطأ في التحقق من المصادقة' 
+        });
+    }
+}
+
+/**
+ * 🛡️ ميدلوير التحقق من الصلاحيات
+ * @param {string[]} allowedRoles - الأدوار المسموح لها بالوصول
+ */
+function checkPermissions(allowedRoles) {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'غير مصرح - يرجى تسجيل الدخول' 
+            });
+        }
+
+        // التحقق من أن الدور مسموح
+        if (!allowedRoles.includes(req.user.role)) {
+            return res.status(403).json({ 
+                success: false, 
+                message: 'غير مصرح - لا تملك الصلاحية للوصول إلى هذا المورد' 
+            });
+        }
+
+        // تحقق إضافي للمالكين والمديرين - يجب أن يكون الحساب مفعل
+        if ((req.user.role === 'owner' || req.user.role === 'manager') && !req.user.is_approved) {
+            return res.status(403).json({ 
+                success: false, 
+                message: 'حسابك قيد المراجعة من قبل الإدارة' 
+            });
+        }
+
+        next();
+    };
+}
+
+/**
+ * 🎯 ميدلوير للتحقق من ملكية الملعب (للمالكين والمديرين)
+ */
+function checkStadiumOwnership(req, res, next) {
+    const stadiumId = req.params.stadiumId || req.body.stadium_id;
+    
+    if (!stadiumId) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'معرف الملعب مطلوب' 
+        });
+    }
+
+    // TODO: يمكن إضافة منطق للتحقق من ملكية الملعب
+    // هذا يحتاج استعلام إضافي لقاعدة البيانات
+    // مؤقتاً نعتمد على checkPermissions فقط
+    
+    next();
+}
+
+/**
+ * 🔍 ميدلوير للتحقق من ملكية الحجز (لللاعبين)
+ */
+function checkBookingOwnership(req, res, next) {
+    const bookingId = req.params.bookingId || req.body.booking_id;
+    
+    if (!bookingId) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'معرف الحجز مطلوب' 
+        });
+    }
+
+    // TODO: يمكن إضافة منطق للتحقق من ملكية الحجز
+    // هذا يحتاج استعلام إضافي لقاعدة البيانات
+    
+    next();
+}
+
+module.exports = {
+    verifyToken,
+    checkPermissions,
+    checkStadiumOwnership,
+    checkBookingOwnership
+};
