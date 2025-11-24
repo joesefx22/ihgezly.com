@@ -1,101 +1,4 @@
-// middlewares/auth.js - Middlewares للتحقق من المصادقة والصلاحيات (نسخة هجينة: Session/JWT)
-
-const jwt = require('jsonwebtoken');
-const config = require('../config'); // استيراد config لـ jwtSecret و roles
-
-// ===================================
-// 1. دالة التحقق من المصادقة (Auth - Session & JWT)
-// ===================================
-
-/**
- * دالة Middleware للتحقق من مصادقة المستخدم.
- * تفحص أولاً الجلسة (Passport)، وإذا لم تنجح، تفحص الـ JWT Bearer Token.
- */
-function verifyToken(req, res, next) {
-    // 1.1. التحقق من Session (إذا تم تسجيل الدخول عبر Passport)
-    // نستخدم req.isAuthenticated() التي يوفرها Passport.js
-    if (req.isAuthenticated() && req.user) {
-        // المصادقة ناجحة عبر الجلسة
-        return next();
-    }
-
-    // 1.2. التحقق من Authorization Header (JWT - لطلبات API غير الموثقة بجلسة)
-    const authHeader = req.headers.authorization;
-
-    // إذا لم تنجح المصادقة بالجلسة، نتحقق من وجود توكن
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ success: false, message: "غير مصرح لك بالدخول. (Authorization token required)." });
-    }
-
-    const token = authHeader.split(' ')[1];
-
-    try {
-        // التحقق من التوكن باستخدام المفتاح السري من config.js
-        const decoded = jwt.verify(token, config.jwtSecret);
-        
-        // تخزين بيانات المستخدم (id, role, email) في الـ request لاستخدامها لاحقاً
-        req.user = decoded; 
-        
-        // فحص إضافي: التأكد من أن الدور في التوكن صحيح وغير مزور
-        if (!config.roles.includes(req.user.role)) {
-             throw new Error("Invalid role in token.");
-        }
-        
-        next();
-    } catch (err) {
-        // خطأ في فك تشفير/صلاحية التوكن
-        return res.status(401).json({ success: false, message: "Invalid or expired token. Please log in again.", error: err.message });
-    }
-}
-
-// ===================================
-// 2. دالة التحقق من الصلاحيات (Authorization - checkPermissions)
-// ===================================
-
-/**
- * دالة Middleware للتحقق من دور المستخدم (Role Based Access Control - RBAC).
- * @param {Array<string>} requiredRoles - الأدوار المطلوبة (مثل: ['admin', 'owner'])
- */
-function checkPermissions(requiredRoles) {
-    // التأكد أن requiredRoles عبارة عن مصفوفة
-    const validRoles = Array.isArray(requiredRoles) ? requiredRoles : [requiredRoles];
-
-    return (req, res, next) => {
-        // يجب أن يكون req.user موجوداً هنا بعد مرور الطلب عبر verifyToken
-        if (!req.user || !req.user.role) {
-            return res.status(401).json({ success: false, message: 'خطأ في المصادقة. لا يوجد دور مستخدم محدد.' });
-        }
-
-        const userRole = req.user.role;
-
-        if (validRoles.includes(userRole)) {
-            // 💡 فحص حالة is_approved للمستخدمين غير اللاعبين
-            // هذا يضمن أن المالكين/المديرين لا يمكنهم استخدام لوحة التحكم قبل الموافقة
-            if (userRole !== 'player' && req.user.is_approved === false) {
-                 return res.status(403).json({ success: false, message: 'حسابك بانتظار موافقة الإدارة، لا يمكنك الوصول للمسار حالياً.' });
-            }
-            return next();
-        }
-
-        // إرسال استجابة Forbidden (ممنوع)
-        res.status(403).json({ 
-            success: false, 
-            message: `غير مصرح لك. تحتاج إلى أحد الأدوار التالية: ${validRoles.join(', ')}` 
-        });
-    };
-}
-
-
-// ===================================
-// 📝 التصدير (Export)
-// ===================================
-
-module.exports = { 
-    verifyToken, 
-    checkPermissions 
-};
-
-// middlewares/auth.js - مصادقة JWT موحدة ومُصلحة
+// middlewares/auth.js - middleware للمصادقة والصلاحيات (النسخة النهائية المُصلحة)
 
 const jwt = require('jsonwebtoken');
 
@@ -151,7 +54,9 @@ function verifyToken(req, res, next) {
         req.user = {
             id: decoded.id,
             role: decoded.role,
-            email: decoded.email
+            email: decoded.email,
+            // إضافة is_approved إذا موجود في التوكن (اختياري)
+            is_approved: decoded.is_approved !== undefined ? decoded.is_approved : true
         };
 
         next();
@@ -196,12 +101,12 @@ function checkPermissions(allowedRoles) {
         if (!allowedRoles.includes(req.user.role)) {
             return res.status(403).json({ 
                 success: false, 
-                message: 'غير مصرح - لا تملك الصلاحية للوصول إلى هذا المورد' 
+                message: `غير مصرح - لا تملك الصلاحية للوصول إلى هذا المورد. الأدوار المسموحة: ${allowedRoles.join(', ')}` 
             });
         }
 
         // تحقق إضافي للمالكين والمديرين - يجب أن يكون الحساب مفعل
-        if ((req.user.role === 'owner' || req.user.role === 'manager') && !req.user.is_approved) {
+        if ((req.user.role === 'owner' || req.user.role === 'manager') && req.user.is_approved === false) {
             return res.status(403).json({ 
                 success: false, 
                 message: 'حسابك قيد المراجعة من قبل الإدارة' 
@@ -214,163 +119,97 @@ function checkPermissions(allowedRoles) {
 
 /**
  * 🎯 ميدلوير للتحقق من ملكية الملعب (للمالكين والمديرين)
+ * ملاحظة: هذا يحتاج استعلام لقاعدة البيانات للتحقق الفعلي
  */
-function checkStadiumOwnership(req, res, next) {
-    const stadiumId = req.params.stadiumId || req.body.stadium_id;
-    
-    if (!stadiumId) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'معرف الملعب مطلوب' 
-        });
-    }
-
-    // TODO: يمكن إضافة منطق للتحقق من ملكية الملعب
-    // هذا يحتاج استعلام إضافي لقاعدة البيانات
-    // مؤقتاً نعتمد على checkPermissions فقط
-
-    // middlewares/auth.js - middleware للمصادقة والصلاحيات
-
-const jwt = require('jsonwebtoken');
-
-/**
- * middleware للتحقق من J token
- */
-function verifyToken(req, res, next) {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ 
-            success: false, 
-            message: 'مطلوب token للمصادقة' 
-        });
-    }
-
-    const token = authHeader.split(' ')[1];
-    
+async function checkStadiumOwnership(req, res, next) {
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
-        req.user = decoded;
+        const stadiumId = req.params.stadiumId || req.body.stadium_id;
+        
+        if (!stadiumId) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'معرف الملعب مطلوب' 
+            });
+        }
+
+        // TODO: يمكن إضافة منطق للتحقق من ملكية الملعب
+        // هذا يحتاج استعلام إضافي لقاعدة البيانات
+        // مؤقتاً نعتمد على checkPermissions فقط
+        
         next();
     } catch (error) {
-        return res.status(401).json({ 
+        console.error('Stadium Ownership Check Error:', error);
+        return res.status(500).json({ 
             success: false, 
-            message: 'Token غير صالح أو منتهي الصلاحية' 
+            message: 'خطأ في التحقق من ملكية الملعب' 
         });
     }
-}
-
-/**
- * middleware للتحقق من الصلاحيات
- */
-function checkPermissions(allowedRoles) {
-    return (req, res, next) => {
-        if (!req.user) {
-            return res.status(401).json({ 
-                success: false, 
-                message: 'غير مصرح بالوصول' 
-            });
-        }
-
-        if (!allowedRoles.includes(req.user.role)) {
-            return res.status(403).json({ 
-                success: false, 
-                message: 'ليس لديك صلاحية للوصول إلى هذا المورد' 
-            });
-        }
-
-        next();
-    };
-}
-
-module.exports = {
-    verifyToken,
-    checkPermissions
-};
-    next();
 }
 
 /**
  * 🔍 ميدلوير للتحقق من ملكية الحجز (لللاعبين)
+ * ملاحظة: هذا يحتاج استعلام لقاعدة البيانات للتحقق الفعلي
  */
-function checkBookingOwnership(req, res, next) {
-    const bookingId = req.params.bookingId || req.body.booking_id;
-    
-    if (!bookingId) {
-        return res.status(400).json({ 
+async function checkBookingOwnership(req, res, next) {
+    try {
+        const bookingId = req.params.bookingId || req.body.booking_id;
+        
+        if (!bookingId) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'معرف الحجز مطلوب' 
+            });
+        }
+
+        // TODO: يمكن إضافة منطق للتحقق من ملكية الحجز
+        // هذا يحتاج استعلام إضافي لقاعدة البيانات
+        
+        next();
+    } catch (error) {
+        console.error('Booking Ownership Check Error:', error);
+        return res.status(500).json({ 
             success: false, 
-            message: 'معرف الحجز مطلوب' 
+            message: 'خطأ في التحقق من ملكية الحجز' 
         });
     }
+}
 
-    // TODO: يمكن إضافة منطق للتحقق من ملكية الحجز
-    // هذا يحتاج استعلام إضافي لقاعدة البيانات
-    
-    next();
+/**
+ * 👑 ميدلوير للتحقق من صلاحيات الأدمن فقط
+ */
+function requireAdmin(req, res, next) {
+    return checkPermissions(['admin'])(req, res, next);
+}
+
+/**
+ * ⚽ ميدلوير للتحقق من صلاحيات المالكين والمديرين فقط
+ */
+function requireOwnerOrManager(req, res, next) {
+    return checkPermissions(['owner', 'manager'])(req, res, next);
+}
+
+/**
+ * 🎮 ميدلوير للتحقق من صلاحيات اللاعبين فقط
+ */
+function requirePlayer(req, res, next) {
+    return checkPermissions(['player'])(req, res, next);
+}
+
+/**
+ * 🔒 ميدلوير للتحقق من صلاحيات أي مستخدم مسجل
+ */
+function requireAuth(req, res, next) {
+    return verifyToken(req, res, next);
 }
 
 module.exports = {
     verifyToken,
     checkPermissions,
     checkStadiumOwnership,
-    checkBookingOwnership
-};
-
-// middlewares/auth.js - middleware للمصادقة والصلاحيات
-
-const jwt = require('jsonwebtoken');
-
-/**
- * middleware للتحقق من JWT token
- */
-function verifyToken(req, res, next) {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ 
-            success: false, 
-            message: 'مطلوب token للمصادقة' 
-        });
-    }
-
-    const token = authHeader.split(' ')[1];
-    
-    try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
-        req.user = decoded;
-        next();
-    } catch (error) {
-        return res.status(401).json({ 
-            success: false, 
-            message: 'Token غير صالح أو منتهي الصلاحية' 
-        });
-    }
-}
-
-/**
- * middleware للتحقق من الصلاحيات
- */
-function checkPermissions(allowedRoles) {
-    return (req, res, next) => {
-        if (!req.user) {
-            return res.status(401).json({ 
-                success: false, 
-                message: 'غير مصرح بالوصول' 
-            });
-        }
-
-        if (!allowedRoles.includes(req.user.role)) {
-            return res.status(403).json({ 
-                success: false, 
-                message: 'ليس لديك صلاحية للوصول إلى هذا المورد' 
-            });
-        }
-
-        next();
-    };
-}
-
-module.exports = {
-    verifyToken,
-    checkPermissions
+    checkBookingOwnership,
+    requireAdmin,
+    requireOwnerOrManager,
+    requirePlayer,
+    requireAuth,
+    ROLES
 };
