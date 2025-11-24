@@ -1,43 +1,47 @@
-// config.js - ملف الإعدادات الأساسي والنهائي
+// config.js - ملف الإعدادات الأساسي والنهائي (مُحسّن)
 
-require('dotenv').config(); // تأكد من استدعاء dotenv
+require('dotenv').config();
+
+// التحقق من المتغيرات الحرجة في بيئة الإنتاج
+if (process.env.NODE_ENV === 'production') {
+    const requiredEnvVars = ['JWT_SECRET', 'DATABASE_URL'];
+    const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+    
+    if (missingVars.length > 0) {
+        console.error('❌ متغيرات بيئة مطلوبة مفقودة:', missingVars.join(', '));
+        process.exit(1);
+    }
+}
 
 module.exports = {
     // ===================================
-    // 🔐 إعدادات الأمان والمصادقة (Auth & Security)
+    // 🔐 إعدادات الأمان والمصادقة
     // ===================================
-
-    // المفتاح السري لـ JWT (يجب أن يكون في .env للإنتاج)
-    jwtSecret: process.env.JWT_SECRET || "YOUR_ULTRA_SECURE_KEY_1234567890",
-    jwtExpiresIn: '1d', // مدة صلاحية توكن المصادقة
-
-    // إعدادات تشفير كلمة المرور (Bcrypt)
+    jwtSecret: process.env.JWT_SECRET || "dev-secret-key-change-in-production",
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1d',
     saltRounds: 10,
-
-    // المفتاح السري للجلسات (مستخدم في server.js)
-    sessionSecret: process.env.SESSION_SECRET || 'a-very-strong-secret-key-for-session',
+    sessionSecret: process.env.SESSION_SECRET || 'dev-session-secret',
 
     // ===================================
-    // 👥 إعدادات الأدوار (Roles & Permissions)
+    // 👥 إعدادات الأدوار
     // ===================================
+    roles: ['player', 'owner', 'manager', 'admin'],
 
-    // الأدوار المسموح بها في النظام (تم تحديثها لتشمل manager)
-    roles: ['player', 'owner', 'manager', 'admin'], 
-    
     // ===================================
-    // 💰 إعدادات الدفع (Payment)
+    // 💰 إعدادات الدفع
     // ===================================
-    
-    // مفتاح بوابة الدفع (Webhook Secret)
-    paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || 'default-webhook-secret', 
-    
-    // الحد الأدنى لساعات الحجز لطلب العربون (بالساعات)
-    depositCutoffHours: 24, 
-    
+    paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || 'dev-webhook-secret',
+    depositCutoffHours: 24,
+
     // ===================================
     // 📧 إعدادات البريد الإلكتروني
     // ===================================
+    senderEmail: process.env.SENDER_EMAIL || 'no-reply@ehgzly.com',
 
-    // مصدر الإرسال المستخدم في emailService.js
-    senderEmail: 'no-reply@ehgzly.com', 
+    // ===================================
+    // 🎯 إعدادات التطبيق العامة
+    // ===================================
+    nodeEnv: process.env.NODE_ENV || 'development',
+    port: process.env.PORT || 3000,
+    appUrl: process.env.APP_URL || 'http://localhost:3000'
 };
