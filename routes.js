@@ -3,15 +3,10 @@
 const express = require('express');
 const router = express.Router();
 const { body, query, param } = require('express-validator');
-const passport = require('passport');
 
 // استيراد المكونات الأساسية
 const { verifyToken, checkPermissions } = require('./middlewares/auth');
-const { uploadSingle } = require('./uploadConfig');
 const controllers = require('./controllers');
-
-// دالة مساعدة لمعالجة أخطاء التحقق من الصحة
-const { handleValidationErrors } = controllers;
 
 // ===================================
 // 👥 مسارات المصادقة (Auth Routes)
@@ -25,12 +20,17 @@ router.post('/api/signup',
         body('password').isLength({ min: 6 }).withMessage('يجب أن تكون كلمة المرور 6 أحرف على الأقل'),
         body('role').isIn(['player', 'owner', 'manager']).withMessage('دور المستخدم غير صالح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.registerController
 );
 
 // مسار تسجيل الدخول (Public)
 router.post('/api/login', 
+    [
+        body('email').isEmail().withMessage('بريد إلكتروني غير صحيح'),
+        body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
+    ],
+    controllers.handleValidationErrors,
     controllers.loginController
 );
 
@@ -60,7 +60,7 @@ router.get('/api/stadiums/:stadiumId',
     [
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.getStadiumDetailsController
 );
 
@@ -70,7 +70,7 @@ router.get('/api/stadiums/:stadiumId/slots',
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
         query('date').isDate().withMessage('التاريخ غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.getAvailableSlotsController
 );
 
@@ -90,7 +90,7 @@ router.post('/api/bookings',
         body('total_price').isFloat({ min: 0 }).withMessage('السعر الإجمالي غير صحيح'),
         body('players_needed').optional().isInt({ min: 0 }).withMessage('عدد اللاعبين المطلوب غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.createBookingController
 );
 
@@ -108,7 +108,7 @@ router.delete('/api/bookings/:bookingId/cancel',
     [
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.cancelBookingPlayerController
 );
 
@@ -124,7 +124,7 @@ router.post('/api/requests',
         body('booking_id').isUUID().withMessage('معرف الحجز غير صحيح'),
         body('players_needed').isInt({ min: 1, max: 10 }).withMessage('عدد اللاعبين المطلوب غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.createPlayerRequestController
 );
 
@@ -134,7 +134,7 @@ router.get('/api/bookings/:bookingId/requests',
     [
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.getRequestsForBookingController
 );
 
@@ -145,7 +145,7 @@ router.post('/api/requests/:requestId/join',
     [
         param('requestId').isUUID().withMessage('معرف الطلب غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.joinPlayerRequestController
 );
 
@@ -162,7 +162,7 @@ router.post('/api/stadiums/:stadiumId/rate',
         body('rating').isInt({ min: 1, max: 5 }).withMessage('التقييم يجب أن يكون بين 1 و 5'),
         body('comment').optional().trim().isLength({ max: 500 }).withMessage('التعليق طويل جداً')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.submitRatingController
 );
 
@@ -182,7 +182,7 @@ router.post('/api/codes/validate',
         body('code').trim().notEmpty().withMessage('الكود مطلوب'),
         body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.validateCodeController
 );
 
@@ -201,7 +201,6 @@ router.get('/api/owner/stadiums',
 router.post('/api/owner/stadiums', 
     verifyToken,
     checkPermissions(['owner', 'manager']),
-    uploadSingle,
     [
         body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
         body('location').trim().notEmpty().withMessage('الموقع مطلوب'),
@@ -209,7 +208,7 @@ router.post('/api/owner/stadiums',
         body('price_per_hour').isFloat({ gt: 0 }).withMessage('السعر بالساعة يجب أن يكون رقماً موجباً'),
         body('deposit_amount').isFloat({ min: 0 }).withMessage('مبلغ العربون يجب أن يكون رقماً')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.createStadiumController
 );
 
@@ -217,13 +216,12 @@ router.post('/api/owner/stadiums',
 router.put('/api/owner/stadiums/:stadiumId',
     verifyToken,
     checkPermissions(['owner', 'manager']),
-    uploadSingle,
     [
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
         body('name').optional().trim().notEmpty().withMessage('اسم الملعب مطلوب'),
         body('price_per_hour').optional().isFloat({ gt: 0 }).withMessage('السعر بالساعة يجب أن يكون رقماً موجباً')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.updateStadiumController
 );
 
@@ -234,7 +232,7 @@ router.get('/api/owner/stadiums/:stadiumId/bookings',
     [
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.getStadiumBookingsOwnerController
 );
 
@@ -245,7 +243,7 @@ router.post('/api/owner/bookings/:bookingId/confirm',
     [
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.confirmBookingOwnerController
 );
 
@@ -256,7 +254,7 @@ router.delete('/api/owner/bookings/:bookingId/cancel',
     [
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.cancelBookingOwnerController
 );
 
@@ -271,7 +269,7 @@ router.post('/api/owner/slots/block',
         body('end_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت الانتهاء غير صحيحة'),
         body('reason').optional().trim().isLength({ max: 255 }).withMessage('السبب طويل جداً')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.blockSlotController
 );
 
@@ -307,7 +305,7 @@ router.post('/api/admin/managers/:userId/approve',
     [
         param('userId').isUUID().withMessage('معرف المستخدم غير صحيح')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.approveManagerController
 );
 
@@ -324,36 +322,10 @@ router.patch('/api/admin/codes/:codeId/status',
     checkPermissions(['admin']),
     [
         param('codeId').isUUID().withMessage('معرف الكود غير صحيح'),
-        body('isActive').isBoolean().withMessage('يجب أن تكون الحالة منطقية (صحيح/خطأ)'),
-        body('type').isIn(['compensation', 'discount']).withMessage('نوع الكود غير صالح'),
+        body('isActive').isBoolean().withMessage('يجب أن تكون الحالة منطقية (صحيح/خطأ)')
     ],
-    handleValidationErrors,
+    controllers.handleValidationErrors,
     controllers.updateCodeStatusController
-);
-
-// ===================================
-// 🌐 مسارات Google OAuth2 (Public)
-// ===================================
-
-// مسار تسجيل الدخول عبر Google
-router.get('/auth/google', 
-    passport.authenticate('google', { scope: ['profile', 'email'] })
-);
-
-// مسار إعادة التوجيه بعد المصادقة
-router.get('/auth/google/callback', 
-    passport.authenticate('google', { failureRedirect: '/login' }),
-    (req, res) => {
-        // بعد نجاح المصادقة، إنشاء JWT وإعادة التوجيه
-        const token = jwt.sign(
-            { id: req.user.id, role: req.user.role, email: req.user.email },
-            process.env.JWT_SECRET || 'fallback-secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
-        
-        // إعادة التوجيه مع التوكن
-        res.redirect(`/auth/success?token=${token}`);
-    }
 );
 
 // ===================================
