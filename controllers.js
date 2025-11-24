@@ -278,8 +278,8 @@ async function createBookingController(req, res) {
             // التحقق من كود الدفع إذا وُجد
             if (payment_method === 'code' && code) {
                 const paymentCode = await client.query(
-                    'SELECT * FROM discount_codes WHERE code = $1 AND type = "payment" AND field_id = $2 AND is_active = TRUE',
-                    [code, stadium_id]
+                    'SELECT * FROM discount_codes WHERE code = $1 AND type = $2 AND field_id = $3 AND is_active = TRUE',
+                    [code, 'payment', stadium_id]
                 );
                 
                 if (!paymentCode.rows.length) {
@@ -391,8 +391,8 @@ async function cancelBookingPlayerController(req, res) {
             
             // تحرير الساعة
             await client.query(
-                'UPDATE generated_slots SET status = "available", booking_id = NULL WHERE booking_id = $1',
-                [bookingId]
+                'UPDATE generated_slots SET status = $1, booking_id = NULL WHERE booking_id = $2',
+                ['available', bookingId]
             );
             
             await models.createActivityLog(
@@ -502,8 +502,8 @@ async function handlePaymentNotificationController(req, res) {
                 
                 // تحديث حالة الساعة
                 await client.query(
-                    'UPDATE generated_slots SET status = "booked_confirmed" WHERE booking_id = $1',
-                    [booking_id]
+                    'UPDATE generated_slots SET status = $1 WHERE booking_id = $2',
+                    ['booked_confirmed', booking_id]
                 );
                 
                 await models.createActivityLog(
@@ -707,8 +707,8 @@ async function confirmBookingOwnerController(req, res) {
             
             // تحديث حالة الساعة
             await client.query(
-                'UPDATE generated_slots SET status = "booked_confirmed" WHERE booking_id = $1',
-                [req.params.bookingId]
+                'UPDATE generated_slots SET status = $1 WHERE booking_id = $2',
+                ['booked_confirmed', req.params.bookingId]
             );
             
             await models.createActivityLog(
@@ -742,8 +742,8 @@ async function cancelBookingOwnerController(req, res) {
             
             // تحرير الساعة
             await client.query(
-                'UPDATE generated_slots SET status = "available", booking_id = NULL WHERE booking_id = $1',
-                [req.params.bookingId]
+                'UPDATE generated_slots SET status = $1, booking_id = NULL WHERE booking_id = $2',
+                ['available', req.params.bookingId]
             );
             
             await models.createActivityLog(
