@@ -822,6 +822,205 @@ async function canUserRateStadium(stadium_id, user_id, client = null) {
     return result && result.length > 0;
 }
 
+// =======================================================
+// 🆕 الدوال الجديدة المطلوبة للتعديلات
+// =======================================================
+
+// 🕒 دوال توليد الساعات
+async function generateStadiumSlots(stadiumId, startDate, endDate, client = null) {
+    const stadium = await getStadiumById(stadiumId);
+    if (!stadium) throw new Error('الملعب غير موجود');
+    
+    const slots = [];
+    const workingDays = stadium.working_days || ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
+    for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+        const dayName = date.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+        
+        if (workingDays.includes(dayName)) {
+            const dateStr = date.toISOString().split('T')[0];
+            const daySlots = await generateDailySlots(stadium, dateStr, client);
+            slots.push(...daySlots);
+        }
+    }
+    
+    return slots;
+}
+
+async function generateDailySlots(stadium, date, client = null) {
+    const { opening_time, closing_time, slot_duration, id: stadium_id } = stadium;
+    const slots = [];
+    
+    const start = new Date(`${date} ${opening_time}`);
+    const end = new Date(`${date} ${closing_time}`);
+    const duration = slot_duration || '1 hour';
+    
+    let current = new Date(start);
+    
+    while (current < end) {
+        const slotEnd = new Date(current.getTime() + (60 * 60 * 1000)); // +1 hour
+        
+        if (slotEnd <= end) {
+            slots.push({
+                stadium_id: stadium_id,
+                slot_date: date,
+                start_time: current.toTimeString().split(' ')[0].substring(0, 5),
+                end_time: slotEnd.toTimeString().split(' ')[0].substring(0, 5),
+                status: 'available'
+            });
+        }
+        
+        current = slotEnd;
+    }
+    
+    // حفظ الساعات في قاعدة البيانات
+    if (slots.length > 0) {
+        await saveGeneratedSlots(slots, client);
+    }
+    
+    return slots;
+}
+
+async function saveGeneratedSlots(slots, client = null) {
+    const query = `
+        INSERT INTO generated_slots (stadium_id, slot_date, start_time, end_time, status)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (stadium_id, slot_date, start_time) 
+        DO NOTHING
+    `;
+    
+    for (const slot of slots) {
+        const values = [slot.stadium_id, slot.slot_date, slot.start_time, slot.end_time, slot.status];
+        if (client) {
+            await client.query(query, values);
+        } else {
+            await execQuery(query, values);
+        }
+    }
+}
+
+async function getStadiumSlots(stadium_id, date) {
+    const query = `
+        SELECT 
+            id,
+            start_time,
+            end_time,
+            status,
+            slot_date
+        FROM generated_slots 
+        WHERE stadium_id = $1 
+        AND slot_date = $2 
+        ORDER BY start_time;
+    `;
+    
+    return execQuery(query, [stadium_id, date]);
+}
+
+// 👥 دوال الموظفين
+async function getEmployeeAssignments(userId) {
+    const query = `
+        SELECT 
+            ea.*,
+            s.name as stadium_name,
+            s.location,
+            s.image_url
+        FROM employee_assignments ea
+        JOIN stadiums s ON ea.stadium_id = s.id
+        WHERE ea.user_id = $1;
+    `;
+    return execQuery(query, [userId]);
+}
+
+async function assignEmployeeToStadium(userId, stadiumId, role, client = null) {
+    const query = `
+        INSERT INTO employee_assignments (user_id, stadium_id, role_in_field)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, stadium_id) 
+        DO UPDATE SET role_in_field = $3
+        RETURNING *;
+    `;
+    
+    if (client) {
+        const result = await client.query(query, [userId, stadiumId, role]);
+        return result.rows[0];
+    } else {
+        return execQueryOne(query, [userId, stadiumId, role]);
+    }
+}
+
+// 🎫 دوال الأكواد
+async function generatePaymentCodes(fieldId, count, createdBy, client = null) {
+    const codes = [];
+    
+    for (let i = 0; i < count; i++) {
+        const code = `PAY-${uuidv4().substring(0, 8).toUpperCase()}`;
+        const query = `
+            INSERT INTO discount_codes (code, type, field_id, amount, is_active, uses_left, created_by)
+            VALUES ($1, 'payment', $2, 0, TRUE, 1, $3)
+            RETURNING code;
+        `;
+        
+        if (client) {
+            const result = await client.query(query, [code, fieldId, createdBy]);
+            codes.push(result.rows[0].code);
+        } else {
+            const result = await execQueryOne(query, [code, fieldId, createdBy]);
+            codes.push(result.code);
+        }
+    }
+    
+    return codes;
+}
+
+async function generateDiscountCodes(amount, percent, count, createdBy, client = null) {
+    const codes = [];
+    
+    for (let i = 0; i < count; i++) {
+        const code = `DISC-${uuidv4().substring(0, 8).toUpperCase()}`;
+        const query = `
+            INSERT INTO discount_codes (code, type, amount, percent, is_active, uses_left, created_by)
+            VALUES ($1, 'discount', $2, $3, TRUE, 1, $4)
+            RETURNING code;
+        `;
+        
+        if (client) {
+            const result = await client.query(query, [code, amount, percent, createdBy]);
+            codes.push(result.rows[0].code);
+        } else {
+            const result = await execQueryOne(query, [code, amount, percent, createdBy]);
+            codes.push(result.code);
+        }
+    }
+    
+    return codes;
+}
+
+async function validateDiscountCode(code, fieldId, userId) {
+    const query = `
+        SELECT * FROM discount_codes 
+        WHERE code = $1 AND type = 'discount' AND is_active = TRUE 
+        AND (uses_left IS NULL OR uses_left > 0)
+        AND (expires_at IS NULL OR expires_at > NOW());
+    `;
+    
+    const codeData = await execQueryOne(query, [code]);
+    
+    if (!codeData) {
+        throw new Error('كود الخصم غير صالح أو منتهي الصلاحية');
+    }
+    
+    return {
+        isValid: true,
+        code_id: codeData.id,
+        amount: codeData.amount,
+        percent: codeData.percent,
+        message: 'كود الخصم صالح'
+    };
+}
+
 // ===================================
 // 📦 التصدير
 // ===================================
@@ -885,4 +1084,15 @@ module.exports = {
     // دوال الإدارة
     getSystemActivityLogs,
     getDashboardStats,
+    
+    // 🆕 الدوال الجديدة
+    generateStadiumSlots,
+    generateDailySlots,
+    saveGeneratedSlots,
+    getStadiumSlots,
+    getEmployeeAssignments,
+    assignEmployeeToStadium,
+    generatePaymentCodes,
+    generateDiscountCodes,
+    validateDiscountCode
 };
