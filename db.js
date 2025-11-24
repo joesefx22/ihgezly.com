@@ -146,6 +146,13 @@ async function createTables() {
                 name VARCHAR(100) NOT NULL,
                 location TEXT NOT NULL,
                 type VARCHAR(50) NOT NULL DEFAULT 'football',
+                
+                -- 🕒 الإعدادات الزمنية الجديدة
+                opening_time TIME NOT NULL DEFAULT '08:00',
+                closing_time TIME NOT NULL DEFAULT '22:00',
+                slot_duration INTERVAL DEFAULT '1 hour',
+                working_days JSONB DEFAULT '["saturday","sunday","monday","tuesday","wednesday","thursday","friday"]',
+                
                 price_per_hour DECIMAL(10,2) NOT NULL,
                 deposit_amount DECIMAL(10,2) DEFAULT 0,
                 image_url TEXT,
@@ -153,6 +160,35 @@ async function createTables() {
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        -- 🆕 جدول تعيين الموظفين للملاعب
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS employee_assignments (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                stadium_id UUID REFERENCES stadiums(id) ON DELETE CASCADE,
+                role_in_field VARCHAR(50),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, stadium_id)
+            );
+        `);
+
+        -- 🆕 جدول الساعات المُولَّدة
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS generated_slots (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                stadium_id UUID REFERENCES stadiums(id) ON DELETE CASCADE,
+                slot_date DATE NOT NULL,
+                start_time TIME NOT NULL,
+                end_time TIME NOT NULL,
+                status VARCHAR(40) DEFAULT 'available',
+                booking_id UUID REFERENCES bookings(id),
+                deposit_paid DECIMAL(10,2) DEFAULT 0,
+                final_price DECIMAL(10,2) DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(stadium_id, slot_date, start_time)
             );
         `);
 
@@ -182,6 +218,23 @@ async function createTables() {
                         (date + end_time)
                     ) WITH &&
                 ) WHERE (status IN ('confirmed', 'pending'))
+            );
+        `);
+
+        -- 🆕 جدول الأكواد
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS discount_codes (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                code VARCHAR(64) UNIQUE NOT NULL,
+                type VARCHAR(20) NOT NULL,
+                field_id UUID REFERENCES stadiums(id),
+                amount DECIMAL(10,2),
+                percent SMALLINT,
+                is_active BOOLEAN DEFAULT TRUE,
+                uses_left INT,
+                created_by UUID REFERENCES users(id),
+                expires_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
@@ -260,18 +313,6 @@ async function createTables() {
                 description TEXT,
                 entity_id UUID,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // جدول الأكواد العامة
-        await execQuery(`
-            CREATE TABLE IF NOT EXISTS codes (
-                code_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                code_value VARCHAR(100) UNIQUE NOT NULL,
-                code_type VARCHAR(50) NOT NULL,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         `);
         
