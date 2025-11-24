@@ -80,3 +80,50 @@ FRONTEND_URL=http://localhost:8080
 
 # الدفع
 PAYMENT_WEBHOOK_SECRET=your-payment-webhook-secret
+
+// uploadConfig.js - إعدادات رفع الملفات
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// تأكد من وجود مجلد uploads
+const uploadDir = path.join(__dirname, 'uploads', 'images');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// إعدادات multer
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+        cb(null, uniqueName);
+    }
+});
+
+// فلترة الملفات
+const fileFilter = (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+        cb(null, true);
+    } else {
+        cb(new Error('يُسمح برفع الصور فقط.'), false);
+    }
+};
+
+const upload = multer({
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: {
+        fileSize: 5 * 1024 * 1024 // 5MB
+    }
+});
+
+// تصدير middleware لرفع ملف واحد
+const uploadSingle = upload.single('image');
+
+module.exports = {
+    uploadSingle,
+    upload
+};
