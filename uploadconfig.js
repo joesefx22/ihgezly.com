@@ -51,3 +51,32 @@ module.exports = {
     upload, 
     uploadSingle // يتم تصديرها للاستخدام كـ Middleware في routes.js
 };
+
+# قاعدة البيانات
+DATABASE_URL=postgresql://username:password@localhost:5432/ehgzly_db
+DB_HOST=localhost
+DB_USER=postgres
+DB_PASS=password
+DB_NAME=ehgzly_db
+DB_PORT=5432
+
+# JWT
+JWT_SECRET=your-super-secret-jwt-key-here
+JWT_EXPIRES_IN=7d
+
+# OAuth
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# البريد الإلكتروني
+EMAIL_USER=your-email@gmail.com
+EMAIL_PASS=your-app-password
+
+# التطبيق
+NODE_ENV=development
+PORT=3000
+APP_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:8080
+
+# الدفع
+PAYMENT_WEBHOOK_SECRET=your-payment-webhook-secret
