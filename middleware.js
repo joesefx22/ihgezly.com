@@ -315,3 +315,62 @@ module.exports = {
     checkStadiumOwnership,
     checkBookingOwnership
 };
+
+// middlewares/auth.js - middleware للمصادقة والصلاحيات
+
+const jwt = require('jsonwebtoken');
+
+/**
+ * middleware للتحقق من JWT token
+ */
+function verifyToken(req, res, next) {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ 
+            success: false, 
+            message: 'مطلوب token للمصادقة' 
+        });
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        req.user = decoded;
+        next();
+    } catch (error) {
+        return res.status(401).json({ 
+            success: false, 
+            message: 'Token غير صالح أو منتهي الصلاحية' 
+        });
+    }
+}
+
+/**
+ * middleware للتحقق من الصلاحيات
+ */
+function checkPermissions(allowedRoles) {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'غير مصرح بالوصول' 
+            });
+        }
+
+        if (!allowedRoles.includes(req.user.role)) {
+            return res.status(403).json({ 
+                success: false, 
+                message: 'ليس لديك صلاحية للوصول إلى هذا المورد' 
+            });
+        }
+
+        next();
+    };
+}
+
+module.exports = {
+    verifyToken,
+    checkPermissions
+};
