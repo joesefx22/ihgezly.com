@@ -1,28 +1,24 @@
-// routes.js - تجميع المسارات (API Endpoints) وتطبيق الـ Middlewares
+// routes.js - تجميع المسارات (API Endpoints) - الإصدار النهائي المُصلح
 
 const express = require('express');
 const router = express.Router();
-const { body, query, param } = require('express-validator'); // إضافة param للتحقق من المسارات
+const { body, query, param } = require('express-validator');
 const passport = require('passport');
 
 // استيراد المكونات الأساسية
-// تم إزالة csrfProtection لأنه لم يعد ضرورياً مع استخدام JWT للـ APIs
-const { verifyToken, checkPermissions } = require('./middlewares/auth'); // مصادقة وتصريح (Auth/Permissions) - الآن يعتمد على JWT
-const { uploadSingle } = require('./uploadConfig'); // لرفع الصور (Multer)
-const controllers = require('./controllers'); // المتحكمات الموحدة
+const { verifyToken, checkPermissions } = require('./middlewares/auth');
+const { uploadSingle } = require('./uploadConfig');
+const controllers = require('./controllers');
 
 // دالة مساعدة لمعالجة أخطاء التحقق من الصحة
 const { handleValidationErrors } = controllers;
 
-
 // ===================================
 // 👥 مسارات المصادقة (Auth Routes)
-// *تم إزالة csrfProtection من جميع هذه المسارات
 // ===================================
 
 // مسار التسجيل (Public)
 router.post('/api/signup',
-    // تمت إزالة csrfProtection
     [
         body('name').trim().notEmpty().withMessage('الاسم مطلوب'),
         body('email').isEmail().withMessage('بريد إلكتروني غير صحيح'),
@@ -35,207 +31,296 @@ router.post('/api/signup',
 
 // مسار تسجيل الدخول (Public)
 router.post('/api/login', 
-    // تمت إزالة csrfProtection
-    controllers.loginController // يفترض أن يستخدم passport.authenticate ثم يصدر JWT
+    controllers.loginController
 );
 
-
-// 🌐 مسارات Google OAuth2 (Public)
-// *هذه المسارات تستخدم Passport (Session) مؤقتاً قبل إصدار JWT وإعادة التوجيه
-router.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-
-// مسار إعادة التوجيه بعد المصادقة
-router.get('/auth/google/callback', 
-    passport.authenticate('google', { failureRedirect: '/login.html' }),
-    (req, res) => {
-        // إعادة توجيه بعد نجاح تسجيل الدخول - يجب أن يُصدر الـ controller JWT هنا في السيناريو الأفضل
-        res.redirect('/'); 
-    }
+// مسار تسجيل الخروج (Authenticated)
+router.post('/api/logout', 
+    verifyToken,
+    controllers.logoutController
 );
 
-// مسار تسجيل الخروج (Authenticated - Player/Owner/Admin)
-router.post('/api/logout', verifyToken, controllers.logoutController);
-
+// جلب بيانات المستخدم الحالي (Authenticated)
+router.get('/api/me', 
+    verifyToken, 
+    controllers.getCurrentUserController
+);
 
 // ===================================
-// 🏟️ مسارات الملاعب (Stadiums Routes)
+// 🏟️ مسارات الملاعب العامة (Public/Player)
 // ===================================
 
-// إضافة ملعب جديد (Authenticated - Admin/Owner)
-router.post('/api/stadiums', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
-    checkPermissions(['admin', 'owner']), 
-    uploadSingle('stadium_image'), // Middleware لرفع صورة واحدة
-    [
-        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
-        body('location').trim().notEmpty().withMessage('الموقع مطلوب'),
-        body('default_price').isFloat({ gt: 0 }).withMessage('السعر الافتراضي غير صحيح'),
-        body('default_deposit').isFloat({ min: 0 }).withMessage('العربون غير صحيح'),
-    ],
-    handleValidationErrors,
-    controllers.createStadiumController
+// جلب قائمة الملاعب (Public)
+router.get('/api/stadiums', 
+    controllers.getStadiumsController
 );
 
-// تحديث معلومات ملعب (Authenticated - Admin/Owner/Manager)
-router.patch('/api/stadiums/:stadiumId', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
-    checkPermissions(['admin', 'owner', 'manager']),
-    uploadSingle('stadium_image'), // للتعامل مع تحديث الصورة
-    [
-        param('stadiumId').isInt().withMessage('معرف الملعب غير صحيح'),
-        body('name').optional().trim().notEmpty().withMessage('اسم الملعب مطلوب'),
-        body('default_price').optional().isFloat({ gt: 0 }).withMessage('السعر الافتراضي غير صحيح'),
-    ],
-    handleValidationErrors,
-    controllers.updateStadiumController
-);
-
-// جلب تفاصيل ملعب واحد (Public)
+// جلب تفاصيل ملعب محدد (Public)
 router.get('/api/stadiums/:stadiumId', 
     [
-        param('stadiumId').isInt().withMessage('معرف الملعب غير صحيح'),
+        param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')
     ],
     handleValidationErrors,
     controllers.getStadiumDetailsController
 );
 
-// جلب قائمة الملاعب (Public)
-router.get('/api/stadiums', 
-    controllers.getAllStadiumsController
+// جلب الساعات المتاحة (Public)
+router.get('/api/stadiums/:stadiumId/slots', 
+    [
+        param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
+        query('date').isDate().withMessage('التاريخ غير صحيح')
+    ],
+    handleValidationErrors,
+    controllers.getAvailableSlotsController
 );
 
 // ===================================
-// 📅 مسارات الحجز (Booking Routes)
+// 📅 مسارات الحجز (Player)
 // ===================================
 
-// إنشاء طلب حجز جديد (Authenticated - Player)
+// إنشاء حجز جديد (Authenticated - Player)
 router.post('/api/bookings', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
+    verifyToken,
     checkPermissions(['player']),
     [
-        body('stadium_id').isInt().withMessage('معرف الملعب غير صحيح'),
+        body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح'),
         body('date').isDate().withMessage('التاريخ غير صحيح'),
-        body('start_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة وقت البدء غير صحيحة'),
-        body('end_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة وقت الانتهاء غير صحيحة'),
-        body('code').optional().trim().isLength({ max: 50 }).withMessage('طول الكود غير صحيح'),
+        body('start_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت البدء غير صحيحة'),
+        body('end_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت الانتهاء غير صحيحة'),
+        body('total_price').isFloat({ min: 0 }).withMessage('السعر الإجمالي غير صحيح'),
+        body('players_needed').optional().isInt({ min: 0 }).withMessage('عدد اللاعبين المطلوب غير صحيح')
     ],
     handleValidationErrors,
     controllers.createBookingController
 );
 
-// جلب حجوزات المستخدم (Authenticated)
-router.get('/api/users/bookings', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
+// جلب حجوزات اللاعب (Authenticated - Player)
+router.get('/api/bookings/me', 
+    verifyToken,
+    checkPermissions(['player']),
     controllers.getUserBookingsController
 );
 
-// إلغاء حجز (Authenticated - Player/Owner)
-router.post('/api/bookings/:bookingId/cancel', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
+// إلغاء الحجز من قبل اللاعب (Authenticated - Player)
+router.delete('/api/bookings/:bookingId/cancel', 
+    verifyToken,
+    checkPermissions(['player']),
     [
-        param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح'),
-        body('reason').optional().trim().isLength({ max: 500 }).withMessage('السبب طويل جداً')
+        param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
     handleValidationErrors,
-    controllers.cancelBookingController
-);
-
-// ===================================
-// 💰 مسار إشعار الدفع (Webhook)
-// *هذا المسار يجب أن يكون عاماً (Public) ولا يحتاج لمصادقة JWT أو CSRF
-// *التحقق الأمني يتم عبر HMAC Signature داخل الـ Controller
-// ===================================
-router.post('/api/payment/webhook', 
-    controllers.handlePaymentNotificationController
+    controllers.cancelBookingPlayerController
 );
 
 // ===================================
 // 👥 مسارات طلبات اللاعبين (Player Requests)
 // ===================================
 
-// إنشاء طلب انضمام لاعبين لحجز (Authenticated - Player)
-router.post('/api/bookings/:bookingId/join-request',
+// إنشاء طلب لاعبين جديد (Authenticated - Player)
+router.post('/api/requests',
     verifyToken,
-    // تمت إزالة csrfProtection
     checkPermissions(['player']),
     [
-        param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح'),
-        body('players_needed').isInt({ min: 1 }).withMessage('عدد اللاعبين المطلوب غير صحيح'),
+        body('booking_id').isUUID().withMessage('معرف الحجز غير صحيح'),
+        body('players_needed').isInt({ min: 1, max: 10 }).withMessage('عدد اللاعبين المطلوب غير صحيح')
     ],
     handleValidationErrors,
     controllers.createPlayerRequestController
 );
 
-// قبول طلب انضمام لاعب لحجز (Authenticated - Player)
+// جلب طلبات اللاعبين لحجز معين (Authenticated)
+router.get('/api/bookings/:bookingId/requests',
+    verifyToken,
+    [
+        param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
+    ],
+    handleValidationErrors,
+    controllers.getRequestsForBookingController
+);
+
+// الانضمام لطلب لاعبين (Authenticated - Player)
 router.post('/api/requests/:requestId/join',
     verifyToken,
-    // تمت إزالة csrfProtection
     checkPermissions(['player']),
     [
-        param('requestId').isUUID().withMessage('معرف الطلب غير صحيح'),
+        param('requestId').isUUID().withMessage('معرف الطلب غير صحيح')
     ],
     handleValidationErrors,
     controllers.joinPlayerRequestController
 );
 
 // ===================================
-// 🎟️ مسارات الأكواد (Codes)
+// ⭐ مسارات التقييمات (Ratings)
 // ===================================
 
-// جلب قائمة الأكواد النشطة (Authenticated - Admin)
-router.get('/api/codes', 
+// إرسال تقييم جديد (Authenticated - Player)
+router.post('/api/stadiums/:stadiumId/rate', 
     verifyToken, 
-    // تمت إزالة csrfProtection
-    checkPermissions(['admin']), 
-    controllers.getAllCodesController
+    checkPermissions(['player']),
+    [
+        param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('rating').isInt({ min: 1, max: 5 }).withMessage('التقييم يجب أن يكون بين 1 و 5'),
+        body('comment').optional().trim().isLength({ max: 500 }).withMessage('التعليق طويل جداً')
+    ],
+    handleValidationErrors,
+    controllers.submitRatingController
 );
 
-// تطبيق كود خصم/تعويض على حجز (Authenticated)
+// ===================================
+// 💰 مسارات الدفع والأكواد
+// ===================================
+
+// مسار إشعار الدفع (Webhook - Public)
+router.post('/api/payment/webhook', 
+    controllers.handlePaymentNotificationController
+);
+
+// التحقق من صلاحية كود (Authenticated)
 router.post('/api/codes/validate',
     verifyToken,
-    // تمت إزالة csrfProtection
     [
         body('code').trim().notEmpty().withMessage('الكود مطلوب'),
-        body('stadium_id').isInt().withMessage('معرف الملعب غير صحيح'),
-        // لا نحتاج userId هنا لأنه سيُستخرج من الـ token
+        body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح')
     ],
     handleValidationErrors,
     controllers.validateCodeController
 );
 
 // ===================================
-// 🛠️ مسارات الأدمن (Admin Routes)
+// ⚽ مسارات إدارة الملاعب (Owner/Manager)
 // ===================================
 
-// جلب المديرين/الملاك بانتظار الموافقة (Authenticated - Admin)
-router.get('/api/admin/pending-managers',
+// جلب ملاعب المالك (Authenticated - Owner/Manager)
+router.get('/api/owner/stadiums', 
     verifyToken,
-    // تمت إزالة csrfProtection
-    checkPermissions(['admin']),
+    checkPermissions(['owner', 'manager']),
+    controllers.getOwnerStadiumsController
+);
+
+// إنشاء ملعب جديد (Authenticated - Owner/Manager)
+router.post('/api/owner/stadiums', 
+    verifyToken,
+    checkPermissions(['owner', 'manager']),
+    uploadSingle,
+    [
+        body('name').trim().notEmpty().withMessage('اسم الملعب مطلوب'),
+        body('location').trim().notEmpty().withMessage('الموقع مطلوب'),
+        body('type').isIn(['football', 'basketball', 'tennis', 'other']).withMessage('نوع الملعب غير صحيح'),
+        body('price_per_hour').isFloat({ gt: 0 }).withMessage('السعر بالساعة يجب أن يكون رقماً موجباً'),
+        body('deposit_amount').isFloat({ min: 0 }).withMessage('مبلغ العربون يجب أن يكون رقماً')
+    ],
+    handleValidationErrors,
+    controllers.createStadiumController
+);
+
+// تحديث ملعب موجود (Authenticated - Owner/Manager)
+router.put('/api/owner/stadiums/:stadiumId',
+    verifyToken,
+    checkPermissions(['owner', 'manager']),
+    uploadSingle,
+    [
+        param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('name').optional().trim().notEmpty().withMessage('اسم الملعب مطلوب'),
+        body('price_per_hour').optional().isFloat({ gt: 0 }).withMessage('السعر بالساعة يجب أن يكون رقماً موجباً')
+    ],
+    handleValidationErrors,
+    controllers.updateStadiumController
+);
+
+// جلب حجوزات ملعب معين (Authenticated - Owner/Manager)
+router.get('/api/owner/stadiums/:stadiumId/bookings', 
+    verifyToken,
+    checkPermissions(['owner', 'manager']),
+    [
+        param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')
+    ],
+    handleValidationErrors,
+    controllers.getStadiumBookingsOwnerController
+);
+
+// تأكيد حجز (Authenticated - Owner/Manager)
+router.post('/api/owner/bookings/:bookingId/confirm', 
+    verifyToken,
+    checkPermissions(['owner', 'manager']),
+    [
+        param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
+    ],
+    handleValidationErrors,
+    controllers.confirmBookingOwnerController
+);
+
+// إلغاء حجز من قبل المالك (Authenticated - Owner/Manager)
+router.delete('/api/owner/bookings/:bookingId/cancel', 
+    verifyToken,
+    checkPermissions(['owner', 'manager']),
+    [
+        param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
+    ],
+    handleValidationErrors,
+    controllers.cancelBookingOwnerController
+);
+
+// حظر ساعة ملعب (Authenticated - Owner/Manager)
+router.post('/api/owner/slots/block', 
+    verifyToken, 
+    checkPermissions(['owner', 'manager']), 
+    [
+        body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('date').isDate().withMessage('التاريخ غير صحيح'),
+        body('start_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت البدء غير صحيحة'),
+        body('end_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت الانتهاء غير صحيحة'),
+        body('reason').optional().trim().isLength({ max: 255 }).withMessage('السبب طويل جداً')
+    ],
+    handleValidationErrors,
+    controllers.blockSlotController
+);
+
+// ===================================
+// 👑 مسارات لوحة الأدمن (Admin)
+// ===================================
+
+// جلب إحصائيات لوحة الأدمن (Authenticated - Admin)
+router.get('/api/admin/dashboard/stats', 
+    verifyToken, 
+    checkPermissions(['admin']), 
+    controllers.getAdminDashboardStatsController
+);
+
+// جلب سجل النشاط (Authenticated - Admin)
+router.get('/api/admin/activity-logs', 
+    verifyToken, 
+    checkPermissions(['admin']), 
+    controllers.getSystemLogsController
+);
+
+// جلب المديرين/الملاك المعلقة طلباتهم (Authenticated - Admin)
+router.get('/api/admin/managers/pending', 
+    verifyToken, 
+    checkPermissions(['admin']), 
     controllers.getPendingManagersController
 );
 
 // الموافقة على مدير/مالك جديد (Authenticated - Admin)
 router.post('/api/admin/managers/:userId/approve', 
     verifyToken,
-    // تمت إزالة csrfProtection
     checkPermissions(['admin']),
     [
-        param('userId').isUUID().withMessage('معرف المستخدم غير صحيح'),
+        param('userId').isUUID().withMessage('معرف المستخدم غير صحيح')
     ],
     handleValidationErrors,
     controllers.approveManagerController
 );
 
-// تحديث حالة كود (تفعيل/تعطيل) (Authenticated - Admin)
+// جلب جميع المستخدمين (Authenticated - Admin)
+router.get('/api/admin/users',
+    verifyToken,
+    checkPermissions(['admin']),
+    controllers.getAllUsersController
+);
+
+// تحديث حالة كود (Authenticated - Admin)
 router.patch('/api/admin/codes/:codeId/status', 
     verifyToken,
-    // تمت إزالة csrfProtection
     checkPermissions(['admin']),
     [
         param('codeId').isUUID().withMessage('معرف الكود غير صحيح'),
@@ -246,73 +331,61 @@ router.patch('/api/admin/codes/:codeId/status',
     controllers.updateCodeStatusController
 );
 
-// جلب جميع المستخدمين (Authenticated - Admin)
-router.get('/api/admin/users',
-    verifyToken,
-    checkPermissions(['admin']),
-    controllers.getAllUsersController
+// ===================================
+// 🌐 مسارات Google OAuth2 (Public)
+// ===================================
+
+// مسار تسجيل الدخول عبر Google
+router.get('/auth/google', 
+    passport.authenticate('google', { scope: ['profile', 'email'] })
 );
 
-// جلب إحصائيات لوحة الأدمن (Authenticated - Admin)
-router.get('/api/admin/stats', 
-    verifyToken, 
-    checkPermissions(['admin']), 
-    controllers.getAdminDashboardStatsController
-);
-
-// جلب سجل النشاط
-router.get('/api/admin/activity-logs', 
-    verifyToken, 
-    checkPermissions(['admin']), 
-    controllers.getSystemLogsController
+// مسار إعادة التوجيه بعد المصادقة
+router.get('/auth/google/callback', 
+    passport.authenticate('google', { failureRedirect: '/login' }),
+    (req, res) => {
+        // بعد نجاح المصادقة، إنشاء JWT وإعادة التوجيه
+        const token = jwt.sign(
+            { id: req.user.id, role: req.user.role, email: req.user.email },
+            process.env.JWT_SECRET || 'fallback-secret',
+            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+        );
+        
+        // إعادة التوجيه مع التوكن
+        res.redirect(`/auth/success?token=${token}`);
+    }
 );
 
 // ===================================
-// ⏰ مسارات إدارة الساعات (للمالك/المدير)
+// 🩺 مسارات الصحة والمراقبة
 // ===================================
 
-// حظر ساعة ملعب معينة
-router.post('/api/owner/slots/block', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
-    checkPermissions(['owner', 'manager']), // التأكد من صلاحية المالك أو المدير
-    [
-        body('stadium_id').isInt().withMessage('معرف الملعب غير صحيح'),
-        body('date').isDate().withMessage('التاريخ غير صحيح'),
-        body('start_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صحيحة'),
-        body('end_time').matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صحيحة'),
-        body('reason').optional().trim().isLength({ max: 255 }).withMessage('السبب طويل جداً')
-    ],
-    handleValidationErrors,
-    controllers.blockSlotController
-);
+// فحص صحة الخدمة (Health Check)
+router.get('/health', (req, res) => {
+    res.json({ 
+        success: true, 
+        message: 'الخدمة تعمل بشكل طبيعي',
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development'
+    });
+});
 
-// ===================================
-// ⭐ مسارات التقييمات
-// ===================================
-
-// إرسال تقييم جديد
-router.post('/api/stadiums/:stadiumId/rate', 
-    verifyToken, 
-    // تمت إزالة csrfProtection
-    [
-        param('stadiumId').isInt().withMessage('معرف الملعب غير صحيح'),
-        body('rating').isInt({ min: 1, max: 5 }).withMessage('التقييم يجب أن يكون بين 1 و 5'),
-        body('comment').optional().trim().isLength({ max: 500 }).withMessage('التعليق طويل جداً')
-    ],
-    handleValidationErrors,
-    controllers.submitRatingController
-);
-
-
-// جلب تقييمات ملعب محدد
-router.get('/api/stadiums/:stadiumId/ratings', 
-    [
-        param('stadiumId').isInt().withMessage('معرف الملعب غير صحيح'),
-    ],
-    handleValidationErrors,
-    controllers.getStadiumRatingsController
-);
-
+// فحص صحة قاعدة البيانات
+router.get('/health/db', async (req, res) => {
+    try {
+        const { healthCheck } = require('./db');
+        const dbStatus = await healthCheck();
+        res.json({ 
+            success: true, 
+            database: dbStatus 
+        });
+    } catch (error) {
+        res.status(503).json({ 
+            success: false, 
+            message: 'فشل في الاتصال بقاعدة البيانات',
+            error: error.message 
+        });
+    }
+});
 
 module.exports = router;
