@@ -292,27 +292,31 @@ async function updateStadium(stadium_id, data, user_id, client = null) {
 async function getAvailableSlots(stadium_id, date) {
     const query = `
         SELECT 
-            generate_series(
-                date + time '08:00', 
-                date + time '22:00', 
+            to_char(slot_time, 'HH24:MI') as time_slot,
+            to_char(slot_time, 'HH12:MI AM') as display_time
+        FROM (
+            SELECT generate_series(
+                $1::date + time '08:00', 
+                $1::date + time '22:00', 
                 '1 hour'::interval
             ) as slot_time
-        FROM (SELECT $1::date as date) d
+        ) slots
         WHERE NOT EXISTS (
             SELECT 1 FROM bookings 
             WHERE stadium_id = $2 
             AND date = $1
             AND status IN ('confirmed', 'pending')
-            AND start_time <= extract(hour from generate_series)::text::time
-            AND end_time > extract(hour from generate_series)::text::time
+            AND start_time <= to_char(slot_time, 'HH24:MI')::time
+            AND end_time > to_char(slot_time, 'HH24:MI')::time
         )
         AND NOT EXISTS (
             SELECT 1 FROM blocked_slots 
             WHERE stadium_id = $2 
             AND date = $1
-            AND start_time <= extract(hour from generate_series)::text::time
-            AND end_time > extract(hour from generate_series)::text::time
-        );
+            AND start_time <= to_char(slot_time, 'HH24:MI')::time
+            AND end_time > to_char(slot_time, 'HH24:MI')::time
+        )
+        ORDER BY slot_time;
     `;
     
     return execQuery(query, [date, stadium_id]);
