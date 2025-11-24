@@ -113,6 +113,43 @@ app.use('/admin', express.static(path.join(__dirname, 'public/admin')));
 const routes = require('./routes');
 app.use('/', routes);
 
+/* ============ 🎯 مسارات الداشبوردات الجديدة ============ */
+
+// صفحة اللاعب الرئيسية
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// لوحة تحكم الموظف
+app.get('/employee/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'employee-dashboard.html'));
+});
+
+// لوحة تحكم المالك
+app.get('/owner/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'owner-dashboard.html'));
+});
+
+// لوحة تحكم الأدمن
+app.get('/admin/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin-dashboard.html'));
+});
+
+// صفحة انتظار الموافقة
+app.get('/pending-approval', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'pending-approval.html'));
+});
+
+// صفحة تسجيل الدخول
+app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// صفحة التسجيل
+app.get('/signup', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'signup.html'));
+});
+
 /* ============ 🔧 دوال مساعدة ============ */
 
 // دالة إنشاء أدمن افتراضي (للتطوير)
@@ -231,9 +268,13 @@ initializeDB().then(() => {
             console.log('├── /api/payment/webhook (POST)');
             console.log('├── /health (GET)');
             console.log('├── /health/db (GET)');
-            console.log('└── /admin (Dashboard)\n');
+            console.log('├── / (Player Dashboard)');
+            console.log('├── /employee/dashboard (Employee Dashboard)');
+            console.log('├── /owner/dashboard (Owner Dashboard)');
+            console.log('├── /admin/dashboard (Admin Dashboard)');
+            console.log('└── /pending-approval (Pending Approval)');
             
-            console.log('👑 Default Admin: admin@ehgzly.com / admin123');
+            console.log('\n👑 Default Admin: admin@ehgzly.com / admin123');
         }
     });
 
