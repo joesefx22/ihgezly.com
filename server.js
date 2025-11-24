@@ -1,4 +1,4 @@
-// server.js - الملف الرئيسي المُصلح والمُبسط
+// server.js - الملف الرئيسي المُصلح والمُبسط - النسخة النهائية الكاملة
 
 require('dotenv').config();
 
@@ -6,15 +6,14 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const passport = require('passport');
-const LocalStrategy = require('passport-local').Strategy;
-const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 
+// ============ 🛡️ استيراد المكونات الأساسية ============
 const { createTables, healthCheck } = require('./db'); 
-const models = require('./models');
+// ❗ مهم: استيراد الـ middlewares
+const { verifyToken, checkPermissions } = require('./middlewares/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,6 +26,9 @@ async function initializeDB() {
         await createTables();
         const check = await healthCheck();
         console.log(`🔌 PostgreSQL connected: ${check.status} (Version: ${check.version})`);
+        
+        // إنشاء مستخدم أدمن افتراضي إذا لم يكن موجود (اختياري)
+        await createDefaultAdmin();
     } catch (error) {
         console.error('❌ FATAL: Failed to connect or create tables:', error.message);
         process.exit(1);
@@ -36,28 +38,40 @@ async function initializeDB() {
 /* ============ 🛡️ إعداد الأمان (Middlewares) ============ */
 
 // 1. Helmet - حماية الرؤوس
-app.use(helmet());
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" } // علشان الصور تعمل
+}));
 
 // 2. CORS - آمن ومحدد
 app.use(cors({
-    origin: isProduction ? process.env.FRONTEND_URL : ['http://localhost:3000', 'http://localhost:8080'],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    origin: isProduction ? process.env.FRONTEND_URL : [
+        'http://localhost:3000', 
+        'http://localhost:8080', 
+        'http://localhost:5173',
+        'http://127.0.0.1:3000'
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     credentials: true,
     optionsSuccessStatus: 204
 }));
 
 // 3. Rate Limiting - مع استثناء Webhook
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'لقد تجاوزت الحد الأقصى للطلبات. حاول مرة أخرى بعد 15 دقيقة.',
+    windowMs: 15 * 60 * 1000, // 15 دقيقة
+    max: 100, // 100 طلب كل 15 دقيقة
+    message: {
+        success: false,
+        message: 'لقد تجاوزت الحد الأقصى للطلبات. حاول مرة أخرى بعد 15 دقيقة.'
+    },
     standardHeaders: true,
     legacyHeaders: false,
 });
 
-// تطبيق Rate Limiting مع استثناء Webhook
+// تطبيق Rate Limiting مع استثناء Webhook والملفات الثابتة
 app.use((req, res, next) => {
-    if (req.path.startsWith('/api/payment/webhook')) {
+    if (req.path.startsWith('/api/payment/webhook') || 
+        req.path.startsWith('/uploads/') ||
+        req.path.startsWith('/health')) {
         return next();
     }
     apiLimiter(req, res, next);
@@ -67,298 +81,147 @@ app.use((req, res, next) => {
 app.use(express.json({
     verify: (req, res, buf) => {
         if (req.originalUrl.startsWith('/api/payment/webhook')) {
-            req.rawBody = buf.toString();
+            req.rawBody = buf.toString(); // حفظ الـ raw body للـ webhook
         }
     },
-    limit: '5mb'
+    limit: '10mb' // زيادة الحد علشان رفع الصور
 }));
 
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ 
+    extended: true,
+    limit: '10mb'
+}));
 
 // 5. Cookie Parser
 app.use(cookieParser());
 
-/* ============ 🔐 إعداد Passport للمصادقة ============ */
+/* ============ 📁 خدمة الملفات الثابتة ============ */
 
-// إستراتيجية Local (البريد وكلمة المرور)
-passport.use(new LocalStrategy({
-    usernameField: 'email',
-    passwordField: 'password'
-}, async (email, password, done) => {
-    try {
-        const user = await models.findUserByEmail(email);
-
-        if (!user) {
-            return done(null, false, { message: 'البريد الإلكتروني غير مسجل.' });
-        }
-
-        // استخدام comparePassword من models
-        const isMatch = await models.comparePassword(password, user.password);
-        if (!isMatch) {
-            return done(null, false, { message: 'كلمة مرور غير صحيحة.' });
-        }
-        
-        // تحقق من حالة الموافقة للمالكين والمديرين
-        if ((user.role === 'owner' || user.role === 'manager') && !user.is_approved) {
-            return done(null, false, { message: 'حسابك قيد المراجعة من قبل الإدارة.' });
-        }
-
-        return done(null, user);
-    } catch (err) {
-        return done(err);
-    }
+// خدمة الملفات الثابتة (HTML, CSS, JS, images)
+app.use(express.static(path.join(__dirname, 'public'), {
+    maxAge: isProduction ? '1d' : '0' // Caching في production
 }));
 
-// إستراتيجية Google OAuth (إذا كانت المتغيرات متوفرة)
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-    passport.use(new GoogleStrategy({
-        clientID: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        callbackURL: `${APP_URL}/auth/google/callback`
-    }, async (accessToken, refreshToken, profile, done) => {
-        try {
-            const user = await models.findOrCreateGoogleUser({ 
-                googleId: profile.id, 
-                email: profile.emails[0].value,
-                name: profile.displayName 
+// خدمة ملفات الـ uploads
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+    maxAge: '7d' // caching للصور
+}));
+
+// خدمة ملفات الـ admin dashboard لو عندك
+app.use('/admin', express.static(path.join(__dirname, 'public/admin')));
+
+/* ============ 🛣️ استيراد وتحميل المسارات ============ */
+
+const routes = require('./routes');
+app.use('/', routes);
+
+/* ============ 🔧 دوال مساعدة ============ */
+
+// دالة إنشاء أدمن افتراضي (للتطوير)
+async function createDefaultAdmin() {
+    try {
+        const models = require('./models');
+        const existingAdmin = await models.findUserByEmail('admin@ehgzly.com');
+        
+        if (!existingAdmin) {
+            console.log('👑 Creating default admin user...');
+            await models.registerNewUser({
+                name: 'System Admin',
+                email: 'admin@ehgzly.com',
+                password: 'admin123',
+                role: 'admin',
+                phone: '+201000000000'
             });
-            return done(null, user);
-        } catch (error) {
-            return done(error);
+            console.log('✅ Default admin created: admin@ehgzly.com / admin123');
         }
-    }));
-}
-
-// التهيئة الأساسية لـ Passport (بدون جلسات)
-app.use(passport.initialize());
-
-/* ============ 📁 خدمة الملفات الثابتة ============ */
-
-app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images')));
-
-/* ============ 🛣️ استيراد وتحميل المسارات ============ */
-
-const routes = require('./routes');
-app.use('/', routes);
-
-/* ============ 💣 معالجة الأخطاء النهائية ============ */
-
-// معالجة خطأ 404
-app.use((req, res) => {
-    res.status(404).json({ 
-        success: false, 
-        message: 'الصفحة غير موجودة' 
-    });
-});
-
-// معالج الأخطاء العام
-app.use((err, req, res, next) => {
-    console.error('❌ Global Error Handler:', err.message);
-    console.error(err.stack);
-
-    // معالجة أخطاء رفع الملفات
-    if (err.message && err.message.includes('يُسمح برفع الصور فقط.')) {
-        return res.status(400).json({ 
-            success: false, 
-            message: err.message 
-        });
-    }
-
-    const statusCode = err.status || 500;
-    res.status(statusCode).json({
-        success: false,
-        message: err.message || 'خطأ داخلي في السيرفر',
-        // إخفاء تفاصيل الخطأ في بيئة الإنتاج
-        error: isProduction ? undefined : err.message
-    });
-});
-
-/* ============ 🚀 بدء السيرفر ============ */
-
-initializeDB().then(() => {
-    app.listen(PORT, () => {
-        console.log('='.repeat(50));
-        console.log(`✅ Server running on ${APP_URL}`);
-        console.log(`🔌 PostgreSQL connected successfully`);
-        console.log(`🔒 Security: JWT Auth, Rate Limiting, Helmet Active`);
-        console.log(`💰 Webhook Ready: Raw body parser enabled`);
-        console.log(`🌐 Environment: ${isProduction ? 'Production' : 'Development'}`);
-        console.log('='.repeat(50));
-        
-        // معلومات إضافية للتطوير
-        if (!isProduction) {
-            console.log('\n📋 Available Routes:');
-            console.log('├── /api/signup (POST)');
-            console.log('├── /api/login (POST)');
-            console.log('├── /api/stadiums (GET)');
-            console.log('├── /api/bookings (POST)');
-            console.log('├── /api/payment/webhook (POST)');
-            console.log('└── /health (GET)\n');
-        }
-    });
-}).catch(error => {
-    console.error('❌ Failed to initialize database and start server:', error.message);
-    process.exit(1);
-});
-
-module.exports = app;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// server.js - الملف الرئيسي المُصلح والمُبسط
-
-require('dotenv').config();
-
-/* ============ المكتبات الأساسية ============ */
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const cookieParser = require('cookie-parser');
-
-const { createTables, healthCheck } = require('./db'); 
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
-const isProduction = process.env.NODE_ENV === 'production';
-
-/* ============ 🗄️ إعداد قاعدة البيانات ============ */
-async function initializeDB() {
-    try {
-        await createTables();
-        const check = await healthCheck();
-        console.log(`🔌 PostgreSQL connected: ${check.status} (Version: ${check.version})`);
     } catch (error) {
-        console.error('❌ FATAL: Failed to connect or create tables:', error.message);
-        process.exit(1);
+        console.log('⚠️ Could not create default admin:', error.message);
     }
 }
-
-/* ============ 🛡️ إعداد الأمان (Middlewares) ============ */
-
-// 1. Helmet - حماية الرؤوس
-app.use(helmet());
-
-// 2. CORS - آمن ومحدد
-app.use(cors({
-    origin: isProduction ? process.env.FRONTEND_URL : ['http://localhost:3000', 'http://localhost:8080', 'http://localhost:5173'],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    credentials: true,
-    optionsSuccessStatus: 204
-}));
-
-// 3. Rate Limiting - مع استثناء Webhook
-const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'لقد تجاوزت الحد الأقصى للطلبات. حاول مرة أخرى بعد 15 دقيقة.',
-    standardHeaders: true,
-    legacyHeaders: false,
-});
-
-// تطبيق Rate Limiting مع استثناء Webhook
-app.use((req, res, next) => {
-    if (req.path.startsWith('/api/payment/webhook')) {
-        return next();
-    }
-    apiLimiter(req, res, next);
-});
-
-// 4. Body Parsers - مع دعم Raw Body للWebhook
-app.use(express.json({
-    verify: (req, res, buf) => {
-        if (req.originalUrl.startsWith('/api/payment/webhook')) {
-            req.rawBody = buf.toString();
-        }
-    },
-    limit: '5mb'
-}));
-
-app.use(express.urlencoded({ extended: true }));
-
-// 5. Cookie Parser
-app.use(cookieParser());
-
-/* ============ 📁 خدمة الملفات الثابتة ============ */
-
-app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads/images')));
-
-/* ============ 🛣️ استيراد وتحميل المسارات ============ */
-
-const routes = require('./routes');
-app.use('/', routes);
 
 /* ============ 💣 معالجة الأخطاء النهائية ============ */
 
 // معالجة خطأ 404
 app.use((req, res) => {
-    res.status(404).json({ 
-        success: false, 
-        message: 'الصفحة غير موجودة' 
-    });
+    // إذا كان طلب API
+    if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ 
+            success: false, 
+            message: 'API endpoint غير موجود',
+            path: req.path
+        });
+    }
+    
+    // إذا كان طلب صفحة
+    res.status(404).sendFile(path.join(__dirname, 'public', '404.html'));
 });
 
 // معالج الأخطاء العام
 app.use((err, req, res, next) => {
     console.error('❌ Global Error Handler:', err.message);
-    console.error(err.stack);
+    
+    // Log التفاصيل الكاملة في development
+    if (!isProduction) {
+        console.error('Stack:', err.stack);
+        console.error('URL:', req.url);
+        console.error('Method:', req.method);
+        console.error('Body:', req.body);
+    }
+
+    // معالجة أخطاء JWT
+    if (err.name === 'JsonWebTokenError') {
+        return res.status(401).json({ 
+            success: false, 
+            message: 'Token مصادقة غير صالح' 
+        });
+    }
+    
+    if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ 
+            success: false, 
+            message: 'انتهت صلاحية token المصادقة' 
+        });
+    }
 
     // معالجة أخطاء رفع الملفات
-    if (err.message && err.message.includes('يُسمح برفع الصور فقط.')) {
+    if (err.message && err.message.includes('يُسمح برفع الصور فقط')) {
         return res.status(400).json({ 
             success: false, 
             message: err.message 
         });
     }
 
+    // معالجة أخطاء قاعدة البيانات
+    if (err.code && err.code.startsWith('23')) { // Postgres errors
+        return res.status(400).json({ 
+            success: false, 
+            message: 'خطأ في البيانات المدخلة' 
+        });
+    }
+
     const statusCode = err.status || 500;
     res.status(statusCode).json({
         success: false,
-        message: err.message || 'خطأ داخلي في السيرفر',
-        // إخفاء تفاصيل الخطأ في بيئة الإنتاج
-        error: isProduction ? undefined : err.message
+        message: isProduction ? 'حدث خطأ داخلي في السيرفر' : err.message,
+        // إرجاع معلومات إضافية في development فقط
+        ...(!isProduction && { 
+            error: err.message,
+            stack: err.stack
+        })
     });
 });
 
 /* ============ 🚀 بدء السيرفر ============ */
 
 initializeDB().then(() => {
-    app.listen(PORT, () => {
-        console.log('='.repeat(50));
-        console.log(`✅ Server running on ${APP_URL}`);
+    const server = app.listen(PORT, () => {
+        console.log('='.repeat(60));
+        console.log(`🚀 Server running on ${APP_URL}`);
         console.log(`🔌 PostgreSQL connected successfully`);
-        console.log(`🔒 Security: JWT Auth, Rate Limiting, Helmet Active`);
+        console.log(`🛡️  Security: JWT Auth, Rate Limiting, Helmet Active`);
         console.log(`💰 Webhook Ready: Raw body parser enabled`);
         console.log(`🌐 Environment: ${isProduction ? 'Production' : 'Development'}`);
-        console.log('='.repeat(50));
+        console.log('='.repeat(60));
         
         // معلومات إضافية للتطوير
         if (!isProduction) {
@@ -368,9 +231,31 @@ initializeDB().then(() => {
             console.log('├── /api/stadiums (GET)');
             console.log('├── /api/bookings (POST)');
             console.log('├── /api/payment/webhook (POST)');
-            console.log('└── /health (GET)\n');
+            console.log('├── /health (GET)');
+            console.log('├── /health/db (GET)');
+            console.log('└── /admin (Dashboard)\n');
+            
+            console.log('👑 Default Admin: admin@ehgzly.com / admin123');
         }
     });
+
+    // معالجة الإغلاق النظيف
+    process.on('SIGTERM', () => {
+        console.log('🛑 SIGTERM received, shutting down gracefully');
+        server.close(() => {
+            console.log('✅ Server closed');
+            process.exit(0);
+        });
+    });
+
+    process.on('SIGINT', () => {
+        console.log('🛑 SIGINT received, shutting down gracefully');
+        server.close(() => {
+            console.log('✅ Server closed');
+            process.exit(0);
+        });
+    });
+
 }).catch(error => {
     console.error('❌ Failed to initialize database and start server:', error.message);
     process.exit(1);
