@@ -84,10 +84,12 @@ router.post('/api/bookings',
     checkPermissions(['player']),
     [
         body('stadium_id').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('slot_id').optional().isUUID().withMessage('معرف الساعة غير صحيح'),
         body('date').isDate().withMessage('التاريخ غير صحيح'),
         body('start_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت البدء غير صحيحة'),
         body('end_time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('صيغة وقت الانتهاء غير صحيحة'),
-        body('total_price').isFloat({ min: 0 }).withMessage('السعر الإجمالي غير صحيح'),
+        body('payment_method').isIn(['online', 'code']).withMessage('طريقة الدفع غير صحيحة'),
+        body('code').optional().trim().isLength({ min: 1 }).withMessage('الكود مطلوب'),
         body('players_needed').optional().isInt({ min: 0 }).withMessage('عدد اللاعبين المطلوب غير صحيح')
     ],
     controllers.handleValidationErrors,
@@ -274,6 +276,30 @@ router.post('/api/owner/slots/block',
 );
 
 // ===================================
+// 🆕 المسارات الجديدة للموظفين
+// ===================================
+
+// جلب ملاعب الموظف (Authenticated - Manager)
+router.get('/api/employee/stadiums', 
+    verifyToken,
+    checkPermissions(['manager']),
+    controllers.getEmployeeStadiumsController
+);
+
+// توليد ساعات للملعب (Authenticated - Owner/Manager)
+router.post('/api/owner/stadiums/:stadiumId/generate-slots',
+    verifyToken,
+    checkPermissions(['owner', 'manager']),
+    [
+        param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('startDate').isDate().withMessage('تاريخ البدء غير صحيح'),
+        body('endDate').isDate().withMessage('تاريخ الانتهاء غير صحيح')
+    ],
+    controllers.handleValidationErrors,
+    controllers.generateSlotsController
+);
+
+// ===================================
 // 👑 مسارات لوحة الأدمن (Admin)
 // ===================================
 
@@ -328,6 +354,34 @@ router.patch('/api/admin/codes/:codeId/status',
     controllers.updateCodeStatusController
 );
 
+// تعيين موظف لملعب (Authenticated - Admin)
+router.post('/api/admin/employees/assign',
+    verifyToken,
+    checkPermissions(['admin']),
+    [
+        body('userId').isUUID().withMessage('معرف المستخدم غير صحيح'),
+        body('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('role').isIn(['manager', 'employee']).withMessage('الدور غير صحيح')
+    ],
+    controllers.handleValidationErrors,
+    controllers.assignEmployeeController
+);
+
+// توليد أكواد (Authenticated - Admin)
+router.post('/api/admin/codes/generate',
+    verifyToken,
+    checkPermissions(['admin']),
+    [
+        body('fieldId').isUUID().withMessage('معرف الملعب غير صحيح'),
+        body('type').isIn(['payment', 'discount']).withMessage('نوع الكود غير صحيح'),
+        body('count').isInt({ min: 1, max: 100 }).withMessage('العدد يجب أن يكون بين 1 و 100'),
+        body('amount').optional().isFloat({ min: 0 }).withMessage('المبلغ يجب أن يكون رقماً موجباً'),
+        body('percent').optional().isInt({ min: 1, max: 100 }).withMessage('النسبة يجب أن تكون بين 1 و 100')
+    ],
+    controllers.handleValidationErrors,
+    controllers.generateCodesController
+);
+
 // ===================================
 // 🩺 مسارات الصحة والمراقبة
 // ===================================
@@ -358,6 +412,35 @@ router.get('/health/db', async (req, res) => {
             error: error.message 
         });
     }
+});
+
+// ===================================
+// 🎯 مسارات التوجيه للداشبوردات
+// ===================================
+
+// صفحة اللاعب
+router.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public/index.html'));
+});
+
+// لوحة تحكم الموظف
+router.get('/employee/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public/employee-dashboard.html'));
+});
+
+// لوحة تحكم المالك
+router.get('/owner/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public/owner-dashboard.html'));
+});
+
+// لوحة تحكم الأدمن
+router.get('/admin/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public/admin-dashboard.html'));
+});
+
+// صفحة انتظار الموافقة
+router.get('/pending-approval', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public/pending-approval.html'));
 });
 
 module.exports = router;
