@@ -32,14 +32,14 @@ function handleInternalError(res, error, message) {
 // ===================================
 
 async function registerController(req, res) {
-    const { email, role } = req.body;
+    const { email, role = 'player' } = req.body; // ⬅️ التأكد من أن الافتراضي 'player'
     try {
         const existingUser = await models.findUserByEmail(email);
         if (existingUser) {
             return res.status(409).json({ success: false, message: "البريد الإلكتروني مسجل بالفعل." });
         }
 
-        const newUser = await models.registerNewUser(req.body);
+        const newUser = await models.registerNewUser({...req.body, role});
         
         res.status(201).json({ 
             success: true, 
@@ -80,7 +80,8 @@ async function loginController(req, res, next) {
             { 
                 id: user.id, 
                 role: user.role, 
-                email: user.email 
+                email: user.email,
+                is_approved: user.is_approved
             },
             process.env.JWT_SECRET || 'fallback-secret',
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
@@ -97,12 +98,52 @@ async function loginController(req, res, next) {
             avatar_url: user.avatar_url
         };
 
+        // 🎯 تحديد الصفحة المناسبة حسب الـ role
+        let redirectTo = '/';
+        let welcomeMessage = 'مرحباً بك!';
+        
+        switch(user.role) {
+            case 'player':
+                redirectTo = '/';
+                welcomeMessage = 'مرحباً بك في منصة اللاعبين!';
+                break;
+                
+            case 'owner':
+                redirectTo = user.is_approved ? '/owner/dashboard' : '/pending-approval';
+                welcomeMessage = user.is_approved 
+                    ? 'مرحباً بك في لوحة تحكم الملاك!' 
+                    : 'حسابك قيد المراجعة من الإدارة';
+                break;
+                
+            case 'manager':
+                redirectTo = user.is_approved ? '/employee/dashboard' : '/pending-approval';
+                welcomeMessage = user.is_approved 
+                    ? 'مرحباً بك في لوحة تحكم المديرين!' 
+                    : 'حسابك قيد المراجعة من الإدارة';
+                break;
+                
+            case 'admin':
+                redirectTo = '/admin/dashboard';
+                welcomeMessage = 'مرحباً بك في لوحة تحكم الأدمن!';
+                break;
+                
+            default:
+                redirectTo = '/';
+        }
+
         res.json({ 
             success: true, 
-            message: 'تم تسجيل الدخول بنجاح', 
+            message: welcomeMessage,
             token,
-            user: userResponse
+            user: userResponse,
+            // 🎯 إضافة معلومات التوجيه
+            redirect: {
+                path: redirectTo,
+                role: user.role,
+                is_approved: user.is_approved
+            }
         });
+        
     } catch (error) {
         handleInternalError(res, error, 'فشل في تسجيل الدخول');
     }
@@ -163,40 +204,147 @@ async function getStadiumDetailsController(req, res) {
 
 async function getAvailableSlotsController(req, res) {
     try {
-        const slots = await models.getAvailableSlots(req.params.stadiumId, req.query.date);
-        res.json({ success: true, data: slots });
+        const stadiumId = req.params.stadiumId;
+        const date = req.query.date;
+        
+        // 🎯 محاولة جلب الساعات المُولَّدة أولاً
+        let slots = await models.getStadiumSlots(stadiumId, date);
+        
+        if (slots.length === 0) {
+            // إذا مفيش ساعات مُولَّدة، نولدها تلقائياً
+            const stadium = await models.getStadiumById(stadiumId);
+            if (stadium) {
+                await models.generateDailySlots(stadium, date);
+                slots = await models.getStadiumSlots(stadiumId, date);
+            }
+        }
+        
+        // تصفية الساعات المتاحة فقط للعرض
+        const availableSlots = slots.filter(slot => slot.status === 'available');
+        
+        res.json({ success: true, data: availableSlots });
     } catch (error) {
         handleInternalError(res, error, 'فشل في جلب الساعات المتاحة');
     }
 }
 
 async function createBookingController(req, res) {
-    const bookingData = { ...req.body, user_id: req.user.id };
-    
     try {
-        const newBooking = await withTransaction(async (client) => {
+        const { stadium_id, slot_id, date, start_time, end_time, payment_method, code, guest_name, guest_phone } = req.body;
+        const user_id = req.user.id;
+        
+        const result = await withTransaction(async (client) => {
+            // جلب بيانات الملعب
+            const stadium = await models.getStadiumById(stadium_id);
+            if (!stadium) throw new Error('الملعب غير موجود');
+            
+            // حساب الوقت المتبقي للساعة
+            const slotDateTime = new Date(`${date} ${start_time}`);
+            const timeToSlot = slotDateTime - new Date();
+            const hoursToSlot = timeToSlot / (1000 * 60 * 60);
+            
+            // 🎯 تحديد العربون حسب وقت الحجز
+            let depositAmount = 0;
+            let bookingStatus = 'pending';
+            let slotStatus = 'available';
+            
+            if (hoursToSlot > 24) {
+                depositAmount = stadium.deposit_amount;
+                bookingStatus = 'pending_payment';
+            } else {
+                depositAmount = 0;
+                bookingStatus = 'booked_unconfirmed';
+                slotStatus = 'booked_unconfirmed';
+            }
+            
+            // تطبيق كود الخصم إذا وُجد
+            let finalDeposit = depositAmount;
+            if (code && payment_method === 'online') {
+                try {
+                    const discount = await models.validateDiscountCode(code, stadium_id, user_id);
+                    if (discount.isValid) {
+                        if (discount.amount) {
+                            finalDeposit = Math.max(0, depositAmount - discount.amount);
+                        } else if (discount.percent) {
+                            finalDeposit = depositAmount * (1 - discount.percent / 100);
+                        }
+                    }
+                } catch (discountError) {
+                    // تجاهل خطأ الكود والمضي قدماً
+                    console.log('Discount code error:', discountError.message);
+                }
+            }
+            
+            // التحقق من كود الدفع إذا وُجد
+            if (payment_method === 'code' && code) {
+                const paymentCode = await client.query(
+                    'SELECT * FROM discount_codes WHERE code = $1 AND type = "payment" AND field_id = $2 AND is_active = TRUE',
+                    [code, stadium_id]
+                );
+                
+                if (!paymentCode.rows.length) {
+                    throw new Error('كود الدفع غير صالح لهذا الملعب');
+                }
+                
+                // إذا الكود صالح، تأكيد الحجز فوراً
+                bookingStatus = 'confirmed';
+                slotStatus = 'booked_confirmed';
+            }
+            
+            const bookingData = {
+                user_id,
+                stadium_id,
+                date,
+                start_time,
+                end_time,
+                total_price: stadium.price_per_hour,
+                deposit_amount: finalDeposit,
+                players_needed: req.body.players_needed || 0,
+                guest_name,
+                guest_phone
+            };
+            
             const booking = await models.createBooking(bookingData, client);
-            await models.createActivityLog(
-                bookingData.user_id, 
-                'BOOKING_CREATE', 
-                `تم إنشاء حجز جديد للملعب ${booking.stadium_id}`, 
-                booking.id, 
-                client
-            );
-            return booking;
+            
+            // تحديث حالة الساعة إذا لزم
+            if (slot_id) {
+                await client.query(
+                    'UPDATE generated_slots SET status = $1, booking_id = $2 WHERE id = $3',
+                    [slotStatus, booking.id, slot_id]
+                );
+            }
+            
+            return {
+                booking,
+                requires_payment: bookingStatus === 'pending_payment',
+                deposit_amount: finalDeposit,
+                payment_method
+            };
         });
-
-        const statusMessage = newBooking.deposit_paid > 0 ? 
-            'تم إنشاء الحجز بنجاح، يرجى إتمام دفع العربون لتأكيد الحجز.' : 
-            'تم إنشاء الحجز بنجاح، بانتظار تأكيد المالك/المدير.';
-
-        res.status(201).json({ 
-            success: true, 
-            message: statusMessage, 
-            data: newBooking 
+        
+        let responseMessage = 'تم إنشاء الحجز بنجاح';
+        let paymentInfo = null;
+        
+        if (result.requires_payment && result.payment_method === 'online') {
+            responseMessage = 'تم إنشاء الحجز بنجاح، يرجى إتمام دفع العربون';
+            paymentInfo = {
+                amount: result.deposit_amount,
+                booking_id: result.booking.id,
+                // هنا يمكن إضافة بيانات Paymob
+            };
+        } else if (result.booking.status === 'booked_unconfirmed') {
+            responseMessage = 'تم إنشاء الحجز بنجاح، بانتظار تأكيد الإدارة';
+        }
+        
+        res.status(201).json({
+            success: true,
+            message: responseMessage,
+            data: result.booking,
+            payment: paymentInfo
         });
+        
     } catch (error) {
-        if (error.message.includes('conflict') || error.message.includes('invalid')) {
+        if (error.message.includes('conflict') || error.message.includes('invalid') || error.message.includes('غير صالح')) {
             return res.status(409).json({ success: false, message: error.message });
         }
         handleInternalError(res, error, 'فشل في عملية الحجز');
@@ -217,8 +365,35 @@ async function cancelBookingPlayerController(req, res) {
     
     try {
         const result = await withTransaction(async (client) => {
+            const booking = await client.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
+            if (!booking.rows.length) throw new Error("الحجز غير موجود");
+            
+            const bookingData = booking.rows[0];
+            
+            // حساب الوقت المتبقي
+            const slotDateTime = new Date(`${bookingData.date} ${bookingData.start_time}`);
+            const timeToSlot = slotDateTime - new Date();
+            const hoursToSlot = timeToSlot / (1000 * 60 * 60);
+            
+            let compensationCode = null;
+            
+            // 🎯 إنشاء كود تعويض إذا الإلغاء قبل 24 ساعة
+            if (hoursToSlot > 24 && bookingData.deposit_paid > 0) {
+                compensationCode = await models.createCompensationCode(
+                    req.user.id, 
+                    bookingData.deposit_paid, 
+                    client
+                );
+            }
+            
             const cancelledBooking = await models.cancelBooking(bookingId, req.user.id, 'player_cancellation', client);
             if (!cancelledBooking) throw new Error("الحجز غير موجود أو لا يمكن إلغاؤه في الوقت الحالي.");
+            
+            // تحرير الساعة
+            await client.query(
+                'UPDATE generated_slots SET status = "available", booking_id = NULL WHERE booking_id = $1',
+                [bookingId]
+            );
             
             await models.createActivityLog(
                 req.user.id, 
@@ -227,11 +402,12 @@ async function cancelBookingPlayerController(req, res) {
                 bookingId, 
                 client
             );
-            return cancelledBooking;
+            
+            return { ...cancelledBooking, compensation_code: compensationCode?.code_value };
         });
 
-        const refundMessage = result.deposit_paid > 0 ? 
-            ` وتم إصدار كود تعويض بقيمة ${result.deposit_paid}.` : 
+        const refundMessage = result.compensation_code ? 
+            ` وتم إصدار كود تعويض بقيمة ${result.deposit_paid}. الكود: ${result.compensation_code}` : 
             '';
             
         res.json({ 
@@ -323,6 +499,12 @@ async function handlePaymentNotificationController(req, res) {
 
                 // تأكيد الحجز
                 const confirmedBooking = await models.finalizePayment(booking_id, reference, amount, client);
+                
+                // تحديث حالة الساعة
+                await client.query(
+                    'UPDATE generated_slots SET status = "booked_confirmed" WHERE booking_id = $1',
+                    [booking_id]
+                );
                 
                 await models.createActivityLog(
                     confirmedBooking.user_id, 
@@ -523,6 +705,12 @@ async function confirmBookingOwnerController(req, res) {
             const booking = await models.confirmBooking(req.params.bookingId, req.user.id, client);
             if (!booking) throw new Error("الحجز غير موجود أو مؤكد بالفعل.");
             
+            // تحديث حالة الساعة
+            await client.query(
+                'UPDATE generated_slots SET status = "booked_confirmed" WHERE booking_id = $1',
+                [req.params.bookingId]
+            );
+            
             await models.createActivityLog(
                 req.user.id, 
                 'BOOKING_CONFIRM', 
@@ -551,6 +739,12 @@ async function cancelBookingOwnerController(req, res) {
         const result = await withTransaction(async (client) => {
             const cancelledBooking = await models.cancelBooking(req.params.bookingId, req.user.id, 'owner_cancellation', client);
             if (!cancelledBooking) throw new Error("الحجز غير موجود أو ملغى بالفعل.");
+            
+            // تحرير الساعة
+            await client.query(
+                'UPDATE generated_slots SET status = "available", booking_id = NULL WHERE booking_id = $1',
+                [req.params.bookingId]
+            );
             
             await models.createActivityLog(
                 req.user.id, 
@@ -598,6 +792,100 @@ async function blockSlotController(req, res) {
             success: false, 
             message: error.message || 'فشل في حظر الفترة الزمنية' 
         });
+    }
+}
+
+// ===================================
+// 🆕 المتحكمات الجديدة
+// ===================================
+
+// 🕒 كونترولر توليد الساعات
+async function generateSlotsController(req, res) {
+    const { stadiumId } = req.params;
+    const { startDate, endDate } = req.body;
+    
+    try {
+        const generatedSlots = await withTransaction(async (client) => {
+            return await models.generateStadiumSlots(stadiumId, startDate, endDate, client);
+        });
+        
+        res.json({
+            success: true,
+            message: `تم توليد ${generatedSlots.length} ساعة للملعب`,
+            data: generatedSlots
+        });
+    } catch (error) {
+        handleInternalError(res, error, 'فشل في توليد الساعات');
+    }
+}
+
+// 👥 كونترولر تعيين الموظفين
+async function assignEmployeeController(req, res) {
+    const { userId, stadiumId, role } = req.body;
+    
+    try {
+        const assignment = await withTransaction(async (client) => {
+            const result = await models.assignEmployeeToStadium(userId, stadiumId, role, client);
+            await models.createActivityLog(
+                req.user.id,
+                'EMPLOYEE_ASSIGN',
+                `تم تعيين الموظف ${userId} للملعب ${stadiumId}`,
+                stadiumId,
+                client
+            );
+            return result;
+        });
+        
+        res.json({
+            success: true,
+            message: 'تم تعيين الموظف بنجاح',
+            data: assignment
+        });
+    } catch (error) {
+        handleInternalError(res, error, 'فشل في تعيين الموظف');
+    }
+}
+
+// 🎯 كونترولر جلب ملاعب الموظف
+async function getEmployeeStadiumsController(req, res) {
+    try {
+        const assignments = await models.getEmployeeAssignments(req.user.id);
+        res.json({ success: true, data: assignments });
+    } catch (error) {
+        handleInternalError(res, error, 'فشل في جلب ملاعب الموظف');
+    }
+}
+
+// 🎫 كونترولر توليد الأكواد
+async function generateCodesController(req, res) {
+    const { fieldId, type, count, amount, percent } = req.body;
+    
+    try {
+        let codes = [];
+        
+        await withTransaction(async (client) => {
+            if (type === 'payment') {
+                codes = await models.generatePaymentCodes(fieldId, count, req.user.id, client);
+            } else if (type === 'discount') {
+                codes = await models.generateDiscountCodes(amount, percent, count, req.user.id, client);
+            }
+            
+            await models.createActivityLog(
+                req.user.id,
+                'CODES_GENERATE',
+                `تم توليد ${count} كود من نوع ${type}`,
+                fieldId,
+                client
+            );
+        });
+        
+        res.json({
+            success: true,
+            message: `تم توليد ${codes.length} كود بنجاح`,
+            data: { codes }
+        });
+    } catch (error) {
+        handleInternalError(res, error, 'فشل في توليد الأكواد');
     }
 }
 
@@ -743,6 +1031,12 @@ module.exports = {
     confirmBookingOwnerController,
     cancelBookingOwnerController,
     blockSlotController,
+    
+    // 🆕 المتحكمات الجديدة
+    generateSlotsController,
+    assignEmployeeController,
+    getEmployeeStadiumsController,
+    generateCodesController,
     
     // Admin
     getAdminDashboardStatsController,
