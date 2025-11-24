@@ -19,7 +19,7 @@ const poolConfig = process.env.DATABASE_URL ? {
 } : {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASS || 'your_default_password', 
+  password: process.env.DB_PASS || 'postgres', 
   database: process.env.DB_NAME || 'ehgzly_db',
   port: parseInt(process.env.DB_PORT) || 5432,
   ssl: false 
@@ -45,9 +45,8 @@ const pool = new Pool(poolConfig);
  * تُستخدم للاستعلامات العادية التي لا تحتاج لـ Transaction
  */
 async function execQuery(text, params) {
-    // 💡 يمكن استخدام pool.query مباشرة فهو آمن
     const res = await pool.query(text, params);
-    return res;
+    return res.rows;
 }
 
 /**
@@ -56,7 +55,7 @@ async function execQuery(text, params) {
  */
 async function execQueryOne(text, params) {
     const res = await pool.query(text, params);
-    return res.rows[0];
+    return res.rows[0] || null;
 }
 
 // ===================================
@@ -82,13 +81,11 @@ async function withTransaction(callback) {
         return result;
     } catch (err) {
         await client.query('ROLLBACK'); // 4. فشل: التراجع عن كل شيء
-        // 💡 إلقاء الخطأ مجدداً ليتمكن الـ Controller من التقاطه والرد على المستخدم بـ 500/409
         throw err; 
     } finally {
         client.release(); // 5. تحرير الـ Client وإعادته للـ Pool (دائماً)
     }
 }
-
 
 // ===================================
 // 4. إدارة مخطط قاعدة البيانات (Schema Management)
@@ -122,46 +119,168 @@ async function createTables() {
     try {
         // تمكين امتداد UUID
         await execQuery(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+        await execQuery(`CREATE EXTENSION IF NOT EXISTS "btree_gist";`);
 
-        // (يجب أن يتم تضمين جميع أوامر CREATE TABLE IF NOT EXISTS هنا...)
-        // 💡 ملاحظة هامة: يجب إضافة قيد EXCLUDE لجدول الحجوزات لضمان عدم تداخل الأوقات (P0-6)
-        
-        // مثال لجدول الحجوزات مع قيد التضارب (EXCLUDE Constraint)
+        // جدول المستخدمين
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                name VARCHAR(100) NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password VARCHAR(255),
+                phone VARCHAR(20),
+                role VARCHAR(20) NOT NULL DEFAULT 'player',
+                is_approved BOOLEAN DEFAULT TRUE,
+                google_id VARCHAR(100),
+                avatar_url TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول الملاعب
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS stadiums (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(100) NOT NULL,
+                location TEXT NOT NULL,
+                type VARCHAR(50) NOT NULL DEFAULT 'football',
+                price_per_hour DECIMAL(10,2) NOT NULL,
+                deposit_amount DECIMAL(10,2) DEFAULT 0,
+                image_url TEXT,
+                features JSONB DEFAULT '[]',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول الحجوزات مع قيد EXCLUDE لمنع التداخل
         await execQuery(`
             CREATE TABLE IF NOT EXISTS bookings (
-                booking_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                stadium_id UUID REFERENCES stadiums(id) ON DELETE CASCADE NOT NULL,
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                 user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                stadium_id UUID REFERENCES stadiums(id) ON DELETE CASCADE NOT NULL,
                 date DATE NOT NULL,
-                start_time TIME WITHOUT TIME ZONE NOT NULL,
-                end_time TIME WITHOUT TIME ZONE NOT NULL,
-                -- ... (بقية الحقول)
-                status VARCHAR(50) NOT NULL,
+                start_time TIME NOT NULL,
+                end_time TIME NOT NULL,
+                total_price DECIMAL(10,2) NOT NULL,
+                deposit_paid DECIMAL(10,2) DEFAULT 0,
+                remaining_amount DECIMAL(10,2) DEFAULT 0,
+                players_needed INTEGER DEFAULT 0,
+                compensation_code VARCHAR(50),
+                payment_reference VARCHAR(100),
+                status VARCHAR(50) NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 
-                -- 🚨 القيد الحاسم لضمان عدم تداخل الحجوزات (P0-6)
-                -- يمنع تداخل أي فترة زمنية (tsrange) لنفس الملعب،
-                -- باستثناء الحجوزات التي في حالة 'canceled' أو 'missed'
+                -- 🚨 القيد الحاسم لضمان عدم تداخل الحجوزات
                 EXCLUDE USING gist (
                     stadium_id WITH =,
                     tstzrange(
-                        (date + start_time::interval), 
-                        (date + end_time::interval), 
-                        '[]'
+                        (date + start_time), 
+                        (date + end_time)
                     ) WITH &&
-                ) WHERE (status NOT IN ('canceled', 'missed', 'payment_failed'))
+                ) WHERE (status IN ('confirmed', 'pending'))
+            );
+        `);
+
+        // جدول التقييمات
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS ratings (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                stadium_id UUID REFERENCES stadiums(id) ON DELETE CASCADE,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                comment TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(stadium_id, user_id)
+            );
+        `);
+
+        // جدول طلبات اللاعبين
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS player_requests (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                booking_id UUID REFERENCES bookings(id) ON DELETE CASCADE,
+                requester_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                players_needed INTEGER NOT NULL,
+                details TEXT,
+                status VARCHAR(50) DEFAULT 'active',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول الساعات المحظورة
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS blocked_slots (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                stadium_id UUID REFERENCES stadiums(id) ON DELETE CASCADE,
+                date DATE NOT NULL,
+                start_time TIME NOT NULL,
+                end_time TIME NOT NULL,
+                reason TEXT,
+                blocked_by_user_id UUID REFERENCES users(id),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول أكواد التعويض
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS compensation_codes (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                code_value VARCHAR(50) UNIQUE NOT NULL,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                amount DECIMAL(10,2) NOT NULL,
+                is_used BOOLEAN DEFAULT FALSE,
+                used_at TIMESTAMP WITH TIME ZONE,
+                used_for_booking_id UUID REFERENCES bookings(id),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول معاملات الدفع
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS payment_transactions (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                provider_tx_id VARCHAR(100) UNIQUE NOT NULL,
+                booking_id UUID REFERENCES bookings(id) ON DELETE CASCADE,
+                amount DECIMAL(10,2) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول سجل النشاط
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                action VARCHAR(100) NOT NULL,
+                description TEXT,
+                entity_id UUID,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول الأكواد العامة
+        await execQuery(`
+            CREATE TABLE IF NOT EXISTS codes (
+                code_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                code_value VARCHAR(100) UNIQUE NOT NULL,
+                code_type VARCHAR(50) NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         `);
         
-        // ... (بقية الجداول: users, stadiums, payments, codes, ratings, activity_logs) ...
-
-        console.log('✅ تم إنشاء أو التحقق من جميع جداول PostgreSQL بنجاح. لا توجد بيانات قديمة محذوفة.');
+        console.log('✅ تم إنشاء أو التحقق من جميع جداول PostgreSQL بنجاح.');
     } catch (error) {
         console.error('❌ خطأ فادح: فشل في إنشاء الجداول:', error.message);
         throw error;
     }
 }
-
 
 // ===================================
 // 📝 التصدير (Export)
@@ -170,7 +289,7 @@ async function createTables() {
 module.exports = { 
     execQuery, 
     execQueryOne, 
-    withTransaction, // 🚨 الدالة الحاسمة
+    withTransaction,
     createTables, 
     healthCheck, 
     pool 
