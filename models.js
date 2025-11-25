@@ -286,7 +286,7 @@ async function updateStadium(stadium_id, data, user_id, client = null) {
 }
 
 // =======================================================
-// 📅 إدارة الحجوزات
+// 📅 إدارة الحجوزات - مُحسّنة بـ Advisory Locks
 // =======================================================
 
 async function getAvailableSlots(stadium_id, date) {
@@ -346,11 +346,12 @@ async function createBooking(data, client = null) {
         finalCompensationCode = compensation_code_value;
     }
 
+    // 🚨 التحقق من التعارضات باستخدام الـ client الممرر
     const conflictQuery = `
         SELECT id FROM bookings 
         WHERE stadium_id = $1 AND date = $2 
         AND (start_time < $4 AND end_time > $3) 
-        AND status IN ('confirmed', 'pending');
+        AND status IN ('confirmed', 'pending', 'pending_payment');
     `;
     
     let conflict;
@@ -615,7 +616,6 @@ async function getPlayerRequestsForBooking(booking_id) {
 }
 
 async function joinPlayerRequest(request_id, player_id, client = null) {
-    // First check if request is still active and has available slots
     const checkQuery = `SELECT players_needed FROM player_requests WHERE id = $1 AND status = 'active';`;
     let checkResult;
     
@@ -705,9 +705,9 @@ async function validateCode(code_value, stadium_id, user_id) {
 
 async function updateCodeStatus(code_id, is_active, type, client = null) {
     const query = `
-        UPDATE codes 
+        UPDATE discount_codes 
         SET is_active = $1, updated_at = NOW() 
-        WHERE code_id = $2
+        WHERE id = $2
         RETURNING *;
     `;
     
@@ -720,7 +720,7 @@ async function updateCodeStatus(code_id, is_active, type, client = null) {
 }
 
 // =======================================================
-// 💰 معالجة المدفوعات
+// 💰 معالجة المدفوعات - مُحسّنة
 // =======================================================
 
 async function finalizePayment(booking_id, reference, amount, client = null) {
@@ -876,7 +876,6 @@ async function generateDailySlots(stadium, date, client = null) {
         current = slotEnd;
     }
     
-    // حفظ الساعات في قاعدة البيانات
     if (slots.length > 0) {
         await saveGeneratedSlots(slots, client);
     }
