@@ -5,14 +5,13 @@ const router = express.Router();
 const { body, query, param } = require('express-validator');
 
 // استيراد المكونات الأساسية
-const { verifyToken, checkPermissions } = require('./middlewares/auth');
+const { verifyToken, checkPermissions, checkStadiumOwnership, checkBookingOwnership } = require('./middleware');
 const controllers = require('./controllers');
 
 // ===================================
 // 👥 مسارات المصادقة (Auth Routes)
 // ===================================
 
-// مسار التسجيل (Public)
 router.post('/api/signup',
     [
         body('name').trim().notEmpty().withMessage('الاسم مطلوب'),
@@ -24,7 +23,6 @@ router.post('/api/signup',
     controllers.registerController
 );
 
-// مسار تسجيل الدخول (Public)
 router.post('/api/login', 
     [
         body('email').isEmail().withMessage('بريد إلكتروني غير صحيح'),
@@ -34,13 +32,11 @@ router.post('/api/login',
     controllers.loginController
 );
 
-// مسار تسجيل الخروج (Authenticated)
 router.post('/api/logout', 
     verifyToken,
     controllers.logoutController
 );
 
-// جلب بيانات المستخدم الحالي (Authenticated)
 router.get('/api/me', 
     verifyToken, 
     controllers.getCurrentUserController
@@ -50,12 +46,10 @@ router.get('/api/me',
 // 🏟️ مسارات الملاعب العامة (Public/Player)
 // ===================================
 
-// جلب قائمة الملاعب (Public)
 router.get('/api/stadiums', 
     controllers.getStadiumsController
 );
 
-// جلب تفاصيل ملعب محدد (Public)
 router.get('/api/stadiums/:stadiumId', 
     [
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')
@@ -64,7 +58,6 @@ router.get('/api/stadiums/:stadiumId',
     controllers.getStadiumDetailsController
 );
 
-// جلب الساعات المتاحة (Public)
 router.get('/api/stadiums/:stadiumId/slots', 
     [
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح'),
@@ -78,7 +71,6 @@ router.get('/api/stadiums/:stadiumId/slots',
 // 📅 مسارات الحجز (Player)
 // ===================================
 
-// إنشاء حجز جديد (Authenticated - Player)
 router.post('/api/bookings', 
     verifyToken,
     checkPermissions(['player']),
@@ -96,14 +88,12 @@ router.post('/api/bookings',
     controllers.createBookingController
 );
 
-// جلب حجوزات اللاعب (Authenticated - Player)
 router.get('/api/bookings/me', 
     verifyToken,
     checkPermissions(['player']),
     controllers.getUserBookingsController
 );
 
-// إلغاء الحجز من قبل اللاعب (Authenticated - Player)
 router.delete('/api/bookings/:bookingId/cancel', 
     verifyToken,
     checkPermissions(['player']),
@@ -111,6 +101,7 @@ router.delete('/api/bookings/:bookingId/cancel',
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
     controllers.handleValidationErrors,
+    checkBookingOwnership, // 🚨 إضافة ownership check
     controllers.cancelBookingPlayerController
 );
 
@@ -118,7 +109,6 @@ router.delete('/api/bookings/:bookingId/cancel',
 // 👥 مسارات طلبات اللاعبين (Player Requests)
 // ===================================
 
-// إنشاء طلب لاعبين جديد (Authenticated - Player)
 router.post('/api/requests',
     verifyToken,
     checkPermissions(['player']),
@@ -130,7 +120,6 @@ router.post('/api/requests',
     controllers.createPlayerRequestController
 );
 
-// جلب طلبات اللاعبين لحجز معين (Authenticated)
 router.get('/api/bookings/:bookingId/requests',
     verifyToken,
     [
@@ -140,7 +129,6 @@ router.get('/api/bookings/:bookingId/requests',
     controllers.getRequestsForBookingController
 );
 
-// الانضمام لطلب لاعبين (Authenticated - Player)
 router.post('/api/requests/:requestId/join',
     verifyToken,
     checkPermissions(['player']),
@@ -155,7 +143,6 @@ router.post('/api/requests/:requestId/join',
 // ⭐ مسارات التقييمات (Ratings)
 // ===================================
 
-// إرسال تقييم جديد (Authenticated - Player)
 router.post('/api/stadiums/:stadiumId/rate', 
     verifyToken, 
     checkPermissions(['player']),
@@ -172,12 +159,10 @@ router.post('/api/stadiums/:stadiumId/rate',
 // 💰 مسارات الدفع والأكواد
 // ===================================
 
-// مسار إشعار الدفع (Webhook - Public)
 router.post('/api/payment/webhook', 
     controllers.handlePaymentNotificationController
 );
 
-// التحقق من صلاحية كود (Authenticated)
 router.post('/api/codes/validate',
     verifyToken,
     [
@@ -192,14 +177,12 @@ router.post('/api/codes/validate',
 // ⚽ مسارات إدارة الملاعب (Owner/Manager)
 // ===================================
 
-// جلب ملاعب المالك (Authenticated - Owner/Manager)
 router.get('/api/owner/stadiums', 
     verifyToken,
     checkPermissions(['owner', 'manager']),
     controllers.getOwnerStadiumsController
 );
 
-// إنشاء ملعب جديد (Authenticated - Owner/Manager)
 router.post('/api/owner/stadiums', 
     verifyToken,
     checkPermissions(['owner', 'manager']),
@@ -214,7 +197,6 @@ router.post('/api/owner/stadiums',
     controllers.createStadiumController
 );
 
-// تحديث ملعب موجود (Authenticated - Owner/Manager)
 router.put('/api/owner/stadiums/:stadiumId',
     verifyToken,
     checkPermissions(['owner', 'manager']),
@@ -224,10 +206,10 @@ router.put('/api/owner/stadiums/:stadiumId',
         body('price_per_hour').optional().isFloat({ gt: 0 }).withMessage('السعر بالساعة يجب أن يكون رقماً موجباً')
     ],
     controllers.handleValidationErrors,
+    checkStadiumOwnership, // 🚨 إضافة ownership check
     controllers.updateStadiumController
 );
 
-// جلب حجوزات ملعب معين (Authenticated - Owner/Manager)
 router.get('/api/owner/stadiums/:stadiumId/bookings', 
     verifyToken,
     checkPermissions(['owner', 'manager']),
@@ -235,10 +217,10 @@ router.get('/api/owner/stadiums/:stadiumId/bookings',
         param('stadiumId').isUUID().withMessage('معرف الملعب غير صحيح')
     ],
     controllers.handleValidationErrors,
+    checkStadiumOwnership, // 🚨 إضافة ownership check
     controllers.getStadiumBookingsOwnerController
 );
 
-// تأكيد حجز (Authenticated - Owner/Manager)
 router.post('/api/owner/bookings/:bookingId/confirm', 
     verifyToken,
     checkPermissions(['owner', 'manager']),
@@ -246,10 +228,10 @@ router.post('/api/owner/bookings/:bookingId/confirm',
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
     controllers.handleValidationErrors,
+    checkBookingOwnership, // 🚨 إضافة ownership check
     controllers.confirmBookingOwnerController
 );
 
-// إلغاء حجز من قبل المالك (Authenticated - Owner/Manager)
 router.delete('/api/owner/bookings/:bookingId/cancel', 
     verifyToken,
     checkPermissions(['owner', 'manager']),
@@ -257,10 +239,10 @@ router.delete('/api/owner/bookings/:bookingId/cancel',
         param('bookingId').isUUID().withMessage('معرف الحجز غير صحيح')
     ],
     controllers.handleValidationErrors,
+    checkBookingOwnership, // 🚨 إضافة ownership check
     controllers.cancelBookingOwnerController
 );
 
-// حظر ساعة ملعب (Authenticated - Owner/Manager)
 router.post('/api/owner/slots/block', 
     verifyToken, 
     checkPermissions(['owner', 'manager']), 
@@ -272,6 +254,7 @@ router.post('/api/owner/slots/block',
         body('reason').optional().trim().isLength({ max: 255 }).withMessage('السبب طويل جداً')
     ],
     controllers.handleValidationErrors,
+    checkStadiumOwnership, // 🚨 إضافة ownership check
     controllers.blockSlotController
 );
 
@@ -279,14 +262,12 @@ router.post('/api/owner/slots/block',
 // 🆕 المسارات الجديدة للموظفين
 // ===================================
 
-// جلب ملاعب الموظف (Authenticated - Manager)
 router.get('/api/employee/stadiums', 
     verifyToken,
     checkPermissions(['manager']),
     controllers.getEmployeeStadiumsController
 );
 
-// توليد ساعات للملعب (Authenticated - Owner/Manager)
 router.post('/api/owner/stadiums/:stadiumId/generate-slots',
     verifyToken,
     checkPermissions(['owner', 'manager']),
@@ -296,6 +277,7 @@ router.post('/api/owner/stadiums/:stadiumId/generate-slots',
         body('endDate').isDate().withMessage('تاريخ الانتهاء غير صحيح')
     ],
     controllers.handleValidationErrors,
+    checkStadiumOwnership, // 🚨 إضافة ownership check
     controllers.generateSlotsController
 );
 
@@ -303,28 +285,24 @@ router.post('/api/owner/stadiums/:stadiumId/generate-slots',
 // 👑 مسارات لوحة الأدمن (Admin)
 // ===================================
 
-// جلب إحصائيات لوحة الأدمن (Authenticated - Admin)
 router.get('/api/admin/dashboard/stats', 
     verifyToken, 
     checkPermissions(['admin']), 
     controllers.getAdminDashboardStatsController
 );
 
-// جلب سجل النشاط (Authenticated - Admin)
 router.get('/api/admin/activity-logs', 
     verifyToken, 
     checkPermissions(['admin']), 
     controllers.getSystemLogsController
 );
 
-// جلب المديرين/الملاك المعلقة طلباتهم (Authenticated - Admin)
 router.get('/api/admin/managers/pending', 
     verifyToken, 
     checkPermissions(['admin']), 
     controllers.getPendingManagersController
 );
 
-// الموافقة على مدير/مالك جديد (Authenticated - Admin)
 router.post('/api/admin/managers/:userId/approve', 
     verifyToken,
     checkPermissions(['admin']),
@@ -335,14 +313,12 @@ router.post('/api/admin/managers/:userId/approve',
     controllers.approveManagerController
 );
 
-// جلب جميع المستخدمين (Authenticated - Admin)
 router.get('/api/admin/users',
     verifyToken,
     checkPermissions(['admin']),
     controllers.getAllUsersController
 );
 
-// تحديث حالة كود (Authenticated - Admin)
 router.patch('/api/admin/codes/:codeId/status', 
     verifyToken,
     checkPermissions(['admin']),
@@ -354,7 +330,6 @@ router.patch('/api/admin/codes/:codeId/status',
     controllers.updateCodeStatusController
 );
 
-// تعيين موظف لملعب (Authenticated - Admin)
 router.post('/api/admin/employees/assign',
     verifyToken,
     checkPermissions(['admin']),
@@ -367,7 +342,6 @@ router.post('/api/admin/employees/assign',
     controllers.assignEmployeeController
 );
 
-// توليد أكواد (Authenticated - Admin)
 router.post('/api/admin/codes/generate',
     verifyToken,
     checkPermissions(['admin']),
@@ -386,7 +360,6 @@ router.post('/api/admin/codes/generate',
 // 🩺 مسارات الصحة والمراقبة
 // ===================================
 
-// فحص صحة الخدمة (Health Check)
 router.get('/health', (req, res) => {
     res.json({ 
         success: true, 
@@ -396,7 +369,6 @@ router.get('/health', (req, res) => {
     });
 });
 
-// فحص صحة قاعدة البيانات
 router.get('/health/db', async (req, res) => {
     try {
         const { healthCheck } = require('./db');
@@ -418,27 +390,24 @@ router.get('/health/db', async (req, res) => {
 // 🎯 مسارات التوجيه للداشبوردات
 // ===================================
 
-// صفحة اللاعب
+const path = require('path');
+
 router.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public/index.html'));
 });
 
-// لوحة تحكم الموظف
 router.get('/employee/dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'public/employee-dashboard.html'));
 });
 
-// لوحة تحكم المالك
 router.get('/owner/dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'public/owner-dashboard.html'));
 });
 
-// لوحة تحكم الأدمن
 router.get('/admin/dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'public/admin-dashboard.html'));
 });
 
-// صفحة انتظار الموافقة
 router.get('/pending-approval', (req, res) => {
     res.sendFile(path.join(__dirname, 'public/pending-approval.html'));
 });
