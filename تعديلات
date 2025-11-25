@@ -1,0 +1,242 @@
+1. 💰 تنفيذ منطق بوابة الدفع (Payment Webhook)
+سنقوم بتقسيم منطق الدفع إلى طبقتين جديدتين:
+
+paymentService.js: للمنطق الخارجي (التحقق من التوقيع السري، التعامل مع مزود الدفع).
+
+paymentModels.js: لمنطق قاعدة البيانات (تسجيل المعاملة، تحديث حالة الحجز).
+
+🛠️ الملف الجديد: services/paymentService.js
+هذا الملف سيكون مسؤولاً عن الأمان والتحقق من أن الإشعار الذي يصلك من بوابة الدفع هو إشعار حقيقي وغير مزور.
+
+JavaScript
+
+// services/paymentService.js - مسؤول عن التحقق من التوقيع السري ومعالجة البيانات
+
+const crypto = require('crypto');
+const { paymentWebhookSecret } = require('../config');
+const models = require('../models/paymentModels'); // سنقوم بإنشاء هذا الملف لاحقاً
+const { withTransaction } = require('../db');
+
+/**
+ * 🔐 التحقق من توقيع الـ Webhook
+ * @param {string} payload - الحمولة الواردة (JSON Body)
+ * @param {string} signature - التوقيع المرسل في الـ Header
+ * @returns {boolean} - True إذا كان التوقيع صحيحاً
+ */
+function verifyWebhookSignature(payload, signature) {
+    if (!signature) {
+        // إذا كان التوقيع مفقوداً، نرفض
+        return false; 
+    }
+    
+    // إنشاء توقيع محلي باستخدام مفتاحك السري (Secret Key)
+    // يجب استخدام نفس خوارزمية التشفير التي يستخدمها مزود الدفع (عادةً SHA256)
+    const hmac = crypto.createHmac('sha256', paymentWebhookSecret);
+    hmac.update(JSON.stringify(payload));
+    const generatedSignature = hmac.digest('hex');
+    
+    // مقارنة التوقيع المُنشأ محلياً بالتوقيع الوارد (يجب أن تكون المقارنة ثابتة الزمن - constant time)
+    return crypto.timingSafeEqual(Buffer.from(generatedSignature), Buffer.from(signature));
+}
+
+/**
+ * 💸 معالجة إشعار الدفع النهائي
+ * (هذه هي الدالة التي ستستخدم داخل handlePaymentNotificationController)
+ */
+async function processPaymentNotification(data) {
+    const { provider_tx_id, booking_id, amount, status } = data;
+
+    // 1. التحقق من أن المعاملة لم تسجل من قبل
+    if (await models.checkPaymentTransactionExists(provider_tx_id)) {
+        throw new Error(`Transaction ${provider_tx_id} already processed.`);
+    }
+
+    // 2. تطبيق المعاملة الذرية (Atomic Transaction)
+    // نستخدم withTransaction لضمان إما نجاح العملية بالكامل أو فشلها
+    await withTransaction(async (client) => {
+        // أ. تسجيل المعاملة في جدول payment_transactions
+        await models.recordPaymentTransaction(
+            provider_tx_id, 
+            booking_id, 
+            amount, 
+            status, 
+            client
+        );
+
+        if (status === 'success') {
+            // ب. تحديث حالة الحجز إلى 'booked_confirmed' في جدول bookings
+            await models.finalizeBookingPayment(booking_id, client);
+            
+            // ج. تسجيل النشاط (كخطوة إضافية)
+            // (يجب أن تكون دالة createActivityLog متوفرة في models)
+            await models.createActivityLog(
+                null, 
+                'PAYMENT_CONFIRMED', 
+                `تم تأكيد دفع عربون الحجز #${booking_id}`, 
+                booking_id, 
+                client
+            );
+        } else if (status === 'failed' || status === 'cancelled') {
+            // د. إذا فشلت، يمكنك هنا إلغاء الحجز المبدئي (اختياري)
+            // await models.cancelBooking(booking_id, client);
+            throw new Error(`Payment failed with status: ${status}`);
+        }
+    });
+
+    return { success: true, message: `Payment for booking ${booking_id} processed successfully.` };
+}
+
+module.exports = {
+    verifyWebhookSignature,
+    processPaymentNotification
+};
+📝 التعديل الضروري: controllers (4).js
+سنقوم بتعديل متحكم handlePaymentNotificationController لكي يستخدم الدالة الجديدة verifyWebhookSignature.
+
+JavaScript
+
+// controllers (4).js - التعديل على دالة Webhook
+
+const paymentService = require('./services/paymentService'); // 💡 استيراد الخدمة الجديدة
+
+// ...
+
+async function handlePaymentNotificationController(req, res) {
+    const rawBody = req.rawBody; // 🚨 نحتاج إلى الجسم الأصلي لكي نعمل الـ Signature
+    const signature = req.headers['x-payment-signature']; // يجب تعديل هذا حسب مزود الدفع (مثل: x-paymob-signature)
+
+    try {
+        // 1. التحقق من أمان الإشعار (خطوة حاسمة)
+        if (!paymentService.verifyWebhookSignature(req.body, signature)) {
+            return res.status(401).json({ success: false, message: "Webhook Signature is invalid." });
+        }
+
+        // 2. معالجة الإشعار الفعلي
+        const result = await paymentService.processPaymentNotification(req.body);
+        
+        // 3. الرد الناجح على مزود الدفع (Status 200/201)
+        res.status(200).json({ success: true, message: "Notification received and processed." });
+
+    } catch (error) {
+        // إذا حدث خطأ (معاملة مكررة، فشل الدفع، خطأ قاعدة بيانات)، نرد بـ 400
+        console.error('Webhook processing error:', error.message);
+        res.status(400).json({ success: false, message: error.message });
+    }
+}
+
+// ... (باقي المتحكمات) ...
+🚨 ملاحظة حرجة: Raw Body Middleware
+لتمكين التحقق من التوقيع، يجب عليك أن تجعل server (3).js يحفظ الـ Raw Body للـ Webhook.
+
+التعديل في server (3).js:
+
+JavaScript
+
+// server (3).js - في قسم Middlewares بعد app.use(helmet)
+
+// ...
+
+// 2. Raw Body Parser للـ Webhook فقط
+app.use(express.json({ 
+    limit: '10kb', 
+    verify: (req, res, buf) => {
+        // نحفظ الـ Raw Body فقط لمسارات الـ Webhook
+        if (req.originalUrl.includes('/api/payment/webhook')) {
+            req.rawBody = buf.toString();
+        }
+    }
+}));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+
+// ...
+2. 🚀 ملفات النشر (Deployment) باستخدام Docker
+للنشر، سنستخدم نظام Docker الذي يضمن أن بيئة التشغيل على السيرفر (Production) هي نفسها بيئة التطوير (Development). هذا يتطلب ملفين جديدين: Dockerfile و docker-compose.yml.
+
+🛠️ الملف الجديد: Dockerfile
+Dockerfile
+
+# Dockerfile - لإنشاء صورة التطبيق النهائية
+
+# 1. مرحلة البناء (Build Stage): استخدام صورة Node.js رسمية
+FROM node:20-slim AS builder
+
+# تعيين دليل العمل داخل الصورة
+WORKDIR /app
+
+# نسخ ملفات المشروع الأساسية
+COPY package*.json ./
+
+# تثبيت التبعيات
+RUN npm install --omit=dev
+
+# نسخ جميع ملفات المشروع المتبقية
+COPY . .
+
+# 2. مرحلة الإنتاج (Production Stage): صورة نظيفة أصغر حجماً
+FROM node:20-slim
+
+WORKDIR /app
+
+# نسخ التبعيات المثبتة والملفات من مرحلة البناء
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app .
+
+# الملفات التي يجب حذفها في بيئة الإنتاج
+RUN rm -rf .env docker-compose.yml Dockerfile
+
+# توضيح المنفذ الذي يستمع عليه التطبيق (3000 هو الافتراضي)
+EXPOSE 3000
+
+# تعريف متغير البيئة على أنه إنتاج
+ENV NODE_ENV=production
+
+# تشغيل التطبيق (يجب أن يتطابق هذا الأمر مع طريقة تشغيلك العادية)
+CMD ["node", "server.js"] 
+🛠️ الملف الجديد: docker-compose.yml
+هذا الملف يتيح لك تشغيل قاعدة البيانات (PostgreSQL) وتطبيق Node.js معاً بضغطة زر.
+
+YAML
+
+# docker-compose.yml - لتشغيل التطبيق وقاعدة البيانات محلياً (Development)
+
+version: '3.8'
+
+services:
+  app:
+    build: .
+    # نستخدم ملف .env لمتغيرات البيئة
+    env_file:
+      - .env
+    ports:
+      - "3000:3000" # ربط منفذ السيرفر المحلي بمنفذ التطبيق
+    depends_on:
+      - db
+    volumes:
+      - .:/app # ربط مجلد العمل للتحديث المباشر أثناء التطوير
+      - /app/node_modules # استثناء مجلد Node_modules
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # يجب أن تتطابق هذه الأسماء مع ما هو في ملف .env
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432" # ربط منفذ قاعدة البيانات المحلي
+    volumes:
+      # حفظ البيانات بشكل دائم حتى لا تُفقد عند إعادة تشغيل Docker
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+باستخدام هذه الملفات الجديدة، أصبح لديك:
+
+منطق الدفع الآمن في ملف paymentService.js.
+
+إعدادات النشر الاحترافية في Dockerfile و docker-compose.yml.
+
+هل تفضل أن نقوم الآن بكتابة محتوى الملف الثالث models/paymentModels.js لإكمال منطق قاعدة البيانات لعملية الدفع؟
