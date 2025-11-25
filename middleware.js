@@ -1,6 +1,7 @@
 // middlewares/auth.js - middleware للمصادقة والصلاحيات (النسخة النهائية المُصلحة)
 
 const jwt = require('jsonwebtoken');
+const { execQueryOne } = require('./db');
 
 // الأدوار المسموحة في النظام
 const ROLES = ['player', 'owner', 'manager', 'admin'];
@@ -55,7 +56,6 @@ function verifyToken(req, res, next) {
             id: decoded.id,
             role: decoded.role,
             email: decoded.email,
-            // إضافة is_approved إذا موجود في التوكن (اختياري)
             is_approved: decoded.is_approved !== undefined ? decoded.is_approved : true
         };
 
@@ -97,7 +97,6 @@ function checkPermissions(allowedRoles) {
             });
         }
 
-        // التحقق من أن الدور مسموح
         if (!allowedRoles.includes(req.user.role)) {
             return res.status(403).json({ 
                 success: false, 
@@ -105,7 +104,6 @@ function checkPermissions(allowedRoles) {
             });
         }
 
-        // تحقق إضافي للمالكين والمديرين - يجب أن يكون الحساب مفعل
         if ((req.user.role === 'owner' || req.user.role === 'manager') && req.user.is_approved === false) {
             return res.status(403).json({ 
                 success: false, 
@@ -119,7 +117,6 @@ function checkPermissions(allowedRoles) {
 
 /**
  * 🎯 ميدلوير للتحقق من ملكية الملعب (للمالكين والمديرين)
- * ملاحظة: هذا يحتاج استعلام لقاعدة البيانات للتحقق الفعلي
  */
 async function checkStadiumOwnership(req, res, next) {
     try {
@@ -132,11 +129,41 @@ async function checkStadiumOwnership(req, res, next) {
             });
         }
 
-        // TODO: يمكن إضافة منطق للتحقق من ملكية الملعب
-        // هذا يحتاج استعلام إضافي لقاعدة البيانات
-        // مؤقتاً نعتمد على checkPermissions فقط
-        
-        next();
+        // التحقق الفعلي من ملكية الملعب
+        const stadium = await execQueryOne(
+            'SELECT owner_id FROM stadiums WHERE id = $1',
+            [stadiumId]
+        );
+
+        if (!stadium) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'الملعب غير موجود' 
+            });
+        }
+
+        // السماح للمالك أو الأدمن
+        if (stadium.owner_id === req.user.id || req.user.role === 'admin') {
+            return next();
+        }
+
+        // التحقق إذا كان المستخدم موظف معين في الملعب
+        if (req.user.role === 'manager') {
+            const assignment = await execQueryOne(
+                'SELECT id FROM employee_assignments WHERE user_id = $1 AND stadium_id = $2',
+                [req.user.id, stadiumId]
+            );
+            
+            if (assignment) {
+                return next();
+            }
+        }
+
+        return res.status(403).json({ 
+            success: false, 
+            message: 'غير مصرح - لا تملك صلاحية الوصول لهذا الملعب' 
+        });
+
     } catch (error) {
         console.error('Stadium Ownership Check Error:', error);
         return res.status(500).json({ 
@@ -147,8 +174,7 @@ async function checkStadiumOwnership(req, res, next) {
 }
 
 /**
- * 🔍 ميدلوير للتحقق من ملكية الحجز (لللاعبين)
- * ملاحظة: هذا يحتاج استعلام لقاعدة البيانات للتحقق الفعلي
+ * 🔍 ميدلوير للتحقق من ملكية الحجز
  */
 async function checkBookingOwnership(req, res, next) {
     try {
@@ -161,10 +187,46 @@ async function checkBookingOwnership(req, res, next) {
             });
         }
 
-        // TODO: يمكن إضافة منطق للتحقق من ملكية الحجز
-        // هذا يحتاج استعلام إضافي لقاعدة البيانات
-        
-        next();
+        // التحقق الفعلي من ملكية الحجز
+        const booking = await execQueryOne(
+            `SELECT b.user_id, b.stadium_id, s.owner_id 
+             FROM bookings b 
+             JOIN stadiums s ON b.stadium_id = s.id 
+             WHERE b.id = $1`,
+            [bookingId]
+        );
+
+        if (!booking) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'الحجز غير موجود' 
+            });
+        }
+
+        // السماح لصاحب الحجز أو مالك الملعب أو الأدمن
+        if (booking.user_id === req.user.id || 
+            booking.owner_id === req.user.id || 
+            req.user.role === 'admin') {
+            return next();
+        }
+
+        // التحقق إذا كان المستخدم موظف معين في الملعب
+        if (req.user.role === 'manager') {
+            const assignment = await execQueryOne(
+                'SELECT id FROM employee_assignments WHERE user_id = $1 AND stadium_id = $2',
+                [req.user.id, booking.stadium_id]
+            );
+            
+            if (assignment) {
+                return next();
+            }
+        }
+
+        return res.status(403).json({ 
+            success: false, 
+            message: 'غير مصرح - لا تملك صلاحية الوصول لهذا الحجز' 
+        });
+
     } catch (error) {
         console.error('Booking Ownership Check Error:', error);
         return res.status(500).json({ 
