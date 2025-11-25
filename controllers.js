@@ -32,7 +32,7 @@ function handleInternalError(res, error, message) {
 // ===================================
 
 async function registerController(req, res) {
-    const { email, role = 'player' } = req.body; // ⬅️ التأكد من أن الافتراضي 'player'
+    const { email, role = 'player' } = req.body;
     try {
         const existingUser = await models.findUserByEmail(email);
         if (existingUser) {
@@ -87,7 +87,6 @@ async function loginController(req, res, next) {
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // إرجاع البيانات بدون كلمة المرور
         const userResponse = {
             id: user.id,
             name: user.name,
@@ -98,7 +97,6 @@ async function loginController(req, res, next) {
             avatar_url: user.avatar_url
         };
 
-        // 🎯 تحديد الصفحة المناسبة حسب الـ role
         let redirectTo = '/';
         let welcomeMessage = 'مرحباً بك!';
         
@@ -136,7 +134,6 @@ async function loginController(req, res, next) {
             message: welcomeMessage,
             token,
             user: userResponse,
-            // 🎯 إضافة معلومات التوجيه
             redirect: {
                 path: redirectTo,
                 role: user.role,
@@ -150,7 +147,6 @@ async function loginController(req, res, next) {
 }
 
 async function logoutController(req, res) {
-    // مع JWT، التسجيل الخروج يكون على العميل بحذف التوكن
     res.json({ success: true, message: 'تم تسجيل الخروج بنجاح' });
 }
 
@@ -207,11 +203,9 @@ async function getAvailableSlotsController(req, res) {
         const stadiumId = req.params.stadiumId;
         const date = req.query.date;
         
-        // 🎯 محاولة جلب الساعات المُولَّدة أولاً
         let slots = await models.getStadiumSlots(stadiumId, date);
         
         if (slots.length === 0) {
-            // إذا مفيش ساعات مُولَّدة، نولدها تلقائياً
             const stadium = await models.getStadiumById(stadiumId);
             if (stadium) {
                 await models.generateDailySlots(stadium, date);
@@ -219,7 +213,6 @@ async function getAvailableSlotsController(req, res) {
             }
         }
         
-        // تصفية الساعات المتاحة فقط للعرض
         const availableSlots = slots.filter(slot => slot.status === 'available');
         
         res.json({ success: true, data: availableSlots });
@@ -234,6 +227,26 @@ async function createBookingController(req, res) {
         const user_id = req.user.id;
         
         const result = await withTransaction(async (client) => {
+            // 🚨 إضافة Advisory Lock لمنع Double-booking
+            const lockKey = `${stadium_id}|${date}|${start_time}`;
+            await client.query(
+                'SELECT pg_advisory_xact_lock(hashtext($1))',
+                [lockKey]
+            );
+
+            // التحقق من التعارضات
+            const conflictCheck = await client.query(
+                `SELECT id FROM bookings 
+                 WHERE stadium_id = $1 AND date = $2 
+                 AND (start_time < $4 AND end_time > $3) 
+                 AND status IN ('confirmed', 'pending', 'pending_payment')`,
+                [stadium_id, date, start_time, end_time]
+            );
+            
+            if (conflictCheck.rows.length > 0) {
+                throw new Error('الساعة المطلوبة محجوزة بالفعل');
+            }
+
             // جلب بيانات الملعب
             const stadium = await models.getStadiumById(stadium_id);
             if (!stadium) throw new Error('الملعب غير موجود');
@@ -243,7 +256,6 @@ async function createBookingController(req, res) {
             const timeToSlot = slotDateTime - new Date();
             const hoursToSlot = timeToSlot / (1000 * 60 * 60);
             
-            // 🎯 تحديد العربون حسب وقت الحجز
             let depositAmount = 0;
             let bookingStatus = 'pending';
             let slotStatus = 'available';
@@ -270,7 +282,6 @@ async function createBookingController(req, res) {
                         }
                     }
                 } catch (discountError) {
-                    // تجاهل خطأ الكود والمضي قدماً
                     console.log('Discount code error:', discountError.message);
                 }
             }
@@ -286,7 +297,6 @@ async function createBookingController(req, res) {
                     throw new Error('كود الدفع غير صالح لهذا الملعب');
                 }
                 
-                // إذا الكود صالح، تأكيد الحجز فوراً
                 bookingStatus = 'confirmed';
                 slotStatus = 'booked_confirmed';
             }
@@ -330,7 +340,6 @@ async function createBookingController(req, res) {
             paymentInfo = {
                 amount: result.deposit_amount,
                 booking_id: result.booking.id,
-                // هنا يمكن إضافة بيانات Paymob
             };
         } else if (result.booking.status === 'booked_unconfirmed') {
             responseMessage = 'تم إنشاء الحجز بنجاح، بانتظار تأكيد الإدارة';
@@ -344,7 +353,7 @@ async function createBookingController(req, res) {
         });
         
     } catch (error) {
-        if (error.message.includes('conflict') || error.message.includes('invalid') || error.message.includes('غير صالح')) {
+        if (error.message.includes('محجوزة') || error.message.includes('غير صالح')) {
             return res.status(409).json({ success: false, message: error.message });
         }
         handleInternalError(res, error, 'فشل في عملية الحجز');
@@ -377,7 +386,6 @@ async function cancelBookingPlayerController(req, res) {
             
             let compensationCode = null;
             
-            // 🎯 إنشاء كود تعويض إذا الإلغاء قبل 24 ساعة
             if (hoursToSlot > 24 && bookingData.deposit_paid > 0) {
                 compensationCode = await models.createCompensationCode(
                     req.user.id, 
@@ -389,7 +397,6 @@ async function cancelBookingPlayerController(req, res) {
             const cancelledBooking = await models.cancelBooking(bookingId, req.user.id, 'player_cancellation', client);
             if (!cancelledBooking) throw new Error("الحجز غير موجود أو لا يمكن إلغاؤه في الوقت الحالي.");
             
-            // تحرير الساعة
             await client.query(
                 'UPDATE generated_slots SET status = $1, booking_id = NULL WHERE booking_id = $2',
                 ['available', bookingId]
@@ -457,15 +464,15 @@ async function submitRatingController(req, res) {
 }
 
 // ===================================
-// 💰 متحكمات الدفع والأكواد
+// 💰 متحكمات الدفع والأكواد - مُحسّنة
 // ===================================
 
 async function handlePaymentNotificationController(req, res) {
-    // التحقق من توقيع الـ webhook
+    // 🚨 التحقق من توقيع الـ webhook باستخدام HMAC
     const signature = req.headers['x-payment-signature'];
     const expectedSignature = crypto
         .createHmac('sha256', process.env.PAYMENT_WEBHOOK_SECRET || 'webhook-secret')
-        .update(req.rawBody)
+        .update(req.rawBody || JSON.stringify(req.body))
         .digest('hex');
 
     if (signature !== expectedSignature) {
@@ -481,24 +488,29 @@ async function handlePaymentNotificationController(req, res) {
 
     try {
         await withTransaction(async (client) => {
-            // التحقق من عدم تكرار المعاملة
-            const transactionExists = await models.checkPaymentTransactionExists(reference, client);
-            if (transactionExists) {
-                console.log(`⏭️  Transaction ${reference} already processed - skipping`);
+            // 🚨 Idempotency Check - منع المعالجة المتكررة
+            const transactionExists = await client.query(
+                'SELECT id FROM payment_transactions WHERE provider_tx_id = $1',
+                [reference]
+            );
+            
+            if (transactionExists.rows.length > 0) {
+                console.log(`⏭️ Transaction ${reference} already processed - skipping`);
                 return;
             }
 
             if (status === 'successful' || status === 'confirmed') { 
                 // تسجيل المعاملة
-                await models.recordPaymentTransaction({
-                    provider_tx_id: reference,
-                    booking_id: booking_id,
-                    amount: amount,
-                    status: 'confirmed'
-                }, client);
+                await client.query(
+                    'INSERT INTO payment_transactions (provider_tx_id, booking_id, amount, status) VALUES ($1, $2, $3, $4)',
+                    [reference, booking_id, amount, 'confirmed']
+                );
 
                 // تأكيد الحجز
-                const confirmedBooking = await models.finalizePayment(booking_id, reference, amount, client);
+                await client.query(
+                    'UPDATE bookings SET status = $1, deposit_paid = $2, remaining_amount = total_price - $2 WHERE id = $3',
+                    ['confirmed', amount, booking_id]
+                );
                 
                 // تحديث حالة الساعة
                 await client.query(
@@ -506,8 +518,11 @@ async function handlePaymentNotificationController(req, res) {
                     ['booked_confirmed', booking_id]
                 );
                 
+                // جلب بيانات الحجز للتسجيل
+                const booking = await client.query('SELECT user_id FROM bookings WHERE id = $1', [booking_id]);
+                
                 await models.createActivityLog(
-                    confirmedBooking.user_id, 
+                    booking.rows[0]?.user_id, 
                     'PAYMENT_SUCCESS', 
                     `تم تأكيد دفع العربون للحجز ${booking_id}`, 
                     booking_id, 
@@ -705,7 +720,6 @@ async function confirmBookingOwnerController(req, res) {
             const booking = await models.confirmBooking(req.params.bookingId, req.user.id, client);
             if (!booking) throw new Error("الحجز غير موجود أو مؤكد بالفعل.");
             
-            // تحديث حالة الساعة
             await client.query(
                 'UPDATE generated_slots SET status = $1 WHERE booking_id = $2',
                 ['booked_confirmed', req.params.bookingId]
@@ -740,7 +754,6 @@ async function cancelBookingOwnerController(req, res) {
             const cancelledBooking = await models.cancelBooking(req.params.bookingId, req.user.id, 'owner_cancellation', client);
             if (!cancelledBooking) throw new Error("الحجز غير موجود أو ملغى بالفعل.");
             
-            // تحرير الساعة
             await client.query(
                 'UPDATE generated_slots SET status = $1, booking_id = NULL WHERE booking_id = $2',
                 ['available', req.params.bookingId]
@@ -799,7 +812,6 @@ async function blockSlotController(req, res) {
 // 🆕 المتحكمات الجديدة
 // ===================================
 
-// 🕒 كونترولر توليد الساعات
 async function generateSlotsController(req, res) {
     const { stadiumId } = req.params;
     const { startDate, endDate } = req.body;
@@ -819,7 +831,6 @@ async function generateSlotsController(req, res) {
     }
 }
 
-// 👥 كونترولر تعيين الموظفين
 async function assignEmployeeController(req, res) {
     const { userId, stadiumId, role } = req.body;
     
@@ -846,7 +857,6 @@ async function assignEmployeeController(req, res) {
     }
 }
 
-// 🎯 كونترولر جلب ملاعب الموظف
 async function getEmployeeStadiumsController(req, res) {
     try {
         const assignments = await models.getEmployeeAssignments(req.user.id);
@@ -856,7 +866,6 @@ async function getEmployeeStadiumsController(req, res) {
     }
 }
 
-// 🎫 كونترولر توليد الأكواد
 async function generateCodesController(req, res) {
     const { fieldId, type, count, amount, percent } = req.body;
     
